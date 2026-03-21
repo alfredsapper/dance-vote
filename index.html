@@ -198,32 +198,66 @@
   // ── Admin ─────────────────────────────────────────────────────
   window.openAdmin = function() {
     audioCtx.resume();
-    const overlay = document.getElementById("admin-overlay");
-    overlay.style.display = "flex";
-    document.getElementById("admin-pass-input").value = "";
-    document.getElementById("admin-error").style.display = "none";
-    document.getElementById("admin-panel-content").style.display = "none";
-    document.getElementById("admin-login-box").style.display = "block";
 
-    // Scanning animation
-    const scanEl = document.getElementById("admin-scanning");
-    const passBox = document.getElementById("admin-pass-box");
-    scanEl.style.display = "block";
-    passBox.style.display = "none";
+    // Fullscreen scan overlay
+    const scanOverlay = document.getElementById("scan-overlay");
+    const scanLine = document.getElementById("scan-line");
+    const scanText = document.getElementById("scan-text");
+    scanOverlay.style.display = "flex";
+    scanText.textContent = "// INITIALISERER...";
 
-    let dots = 0;
+    // Scan sound — rising beeps
+    const t = audioCtx.currentTime;
+    [110, 220, 330, 440, 550, 660].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, t + i * 0.12);
+      gain.gain.setValueAtTime(0.12, t + i * 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.12 + 0.18);
+      osc.start(t + i * 0.12);
+      osc.stop(t + i * 0.12 + 0.2);
+    });
+
+    const msgs = [
+      "// INITIALISERER...",
+      "// KOBLER TIL JARVIS...",
+      "// VERIFISERER IDENTITET...",
+      "// LASTER BRUKERDATA...",
+      "// TILGANG KLAR"
+    ];
+    let idx = 0;
     const interval = setInterval(() => {
-      dots = (dots + 1) % 4;
-      scanEl.textContent = "// SKANNER" + ".".repeat(dots);
-    }, 300);
-
-    setTimeout(() => {
-      clearInterval(interval);
-      scanEl.style.display = "none";
-      passBox.style.display = "block";
-      document.getElementById("admin-pass-input").focus();
-      playPowerUp();
-    }, 1800);
+      idx++;
+      if (idx < msgs.length) {
+        scanText.textContent = msgs[idx];
+        // beep per message
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.connect(g); g.connect(audioCtx.destination);
+        o.type = "sine"; o.frequency.value = 400 + idx * 80;
+        g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+        o.start(); o.stop(audioCtx.currentTime + 0.15);
+      } else {
+        clearInterval(interval);
+        setTimeout(() => {
+          scanOverlay.style.display = "none";
+          // Open modal
+          const overlay = document.getElementById("admin-overlay");
+          overlay.style.display = "flex";
+          document.getElementById("admin-pass-input").value = "";
+          document.getElementById("admin-error").style.display = "none";
+          document.getElementById("admin-panel-content").style.display = "none";
+          document.getElementById("admin-login-box").style.display = "block";
+          document.getElementById("admin-scanning").style.display = "none";
+          document.getElementById("admin-pass-box").style.display = "flex";
+          document.getElementById("admin-pass-input").focus();
+          playPowerUp();
+        }, 300);
+      }
+    }, 380);
   };
 
   window.closeAdmin = function() {
@@ -301,6 +335,12 @@
     const totalVotes = allOutfits.reduce((s, o) => s + (o.votes || 0), 0);
     const counterEl = document.getElementById("vote-counter");
     if (counterEl) counterEl.textContent = `${totalVotes} stemme${totalVotes !== 1 ? "r" : ""} totalt`;
+
+    // If my outfit was deleted by admin, reset so I can submit a new one
+    if (myOutfitId && !allOutfits.find(o => o.id === myOutfitId)) {
+      myOutfitId = null;
+      renderForm();
+    }
 
     if (snapshot.empty) {
       container.innerHTML = "";
@@ -634,6 +674,90 @@
 
   #empty-state { text-align: center; padding: 3rem 1rem; color: var(--muted); display: none; font-size: 0.88rem; }
 
+  /* ── Fullscreen scan overlay ── */
+  #scan-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #000;
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #scan-line {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--ts-accent), transparent);
+    box-shadow: 0 0 12px var(--ts-accent), 0 0 30px var(--ts-accent);
+    animation: scanDown 0.6s linear infinite;
+  }
+
+  @keyframes scanDown {
+    from { top: 0; }
+    to { top: 100%; }
+  }
+
+  #scan-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5rem;
+    z-index: 1;
+  }
+
+  #scan-logo {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: clamp(2rem, 8vw, 3.5rem);
+    color: var(--ts-accent);
+    letter-spacing: 0.3em;
+    text-shadow: 0 0 20px var(--ts-accent), 0 0 40px var(--ts-accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  #scan-text {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.82rem;
+    color: var(--ts-accent);
+    letter-spacing: 0.18em;
+    min-height: 1.4rem;
+    text-shadow: 0 0 8px var(--ts-accent);
+  }
+
+  #scan-bars {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+    height: 30px;
+  }
+
+  .scan-bar {
+    width: 6px;
+    background: var(--ts-accent);
+    border-radius: 2px;
+    animation: barPulse 0.5s ease-in-out infinite;
+    box-shadow: 0 0 6px var(--ts-accent);
+  }
+
+  .scan-bar:nth-child(1) { animation-delay: 0s; height: 60%; }
+  .scan-bar:nth-child(2) { animation-delay: 0.1s; height: 100%; }
+  .scan-bar:nth-child(3) { animation-delay: 0.2s; height: 40%; }
+  .scan-bar:nth-child(4) { animation-delay: 0.3s; height: 80%; }
+  .scan-bar:nth-child(5) { animation-delay: 0.4s; height: 55%; }
+
+  @keyframes barPulse {
+    0%, 100% { transform: scaleY(1); opacity: 1; }
+    50% { transform: scaleY(0.4); opacity: 0.4; }
+  }
+
   /* ── Admin overlay ── */
   #admin-overlay {
     display: none;
@@ -892,6 +1016,22 @@
 
     <div id="empty-state"><p>Ingen forslag ennå.</p></div>
     <div id="cards-container"></div>
+  </div>
+</div>
+
+<!-- Fullscreen scan -->
+<div id="scan-overlay">
+  <div id="scan-line"></div>
+  <div id="scan-content">
+    <div id="scan-logo">⬡ JARVIS</div>
+    <div id="scan-text">// INITIALISERER...</div>
+    <div id="scan-bars">
+      <div class="scan-bar"></div>
+      <div class="scan-bar"></div>
+      <div class="scan-bar"></div>
+      <div class="scan-bar"></div>
+      <div class="scan-bar"></div>
+    </div>
   </div>
 </div>
 
