@@ -35,7 +35,40 @@
   let myVotedForId = null;
   let allOutfits = [];
 
-  // ── Auth state ──────────────────────────────────────────────
+  // ── Audio ────────────────────────────────────────────────────
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  function playPowerUp() {
+    const t = audioCtx.currentTime;
+    [220, 440, 660, 880].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, t + i * 0.08);
+      gain.gain.setValueAtTime(0.18, t + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.08 + 0.15);
+      osc.start(t + i * 0.08);
+      osc.stop(t + i * 0.08 + 0.2);
+    });
+  }
+
+  function playAccessDenied() {
+    const t = audioCtx.currentTime;
+    [180, 150, 120].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq, t + i * 0.12);
+      gain.gain.setValueAtTime(0.15, t + i * 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.12 + 0.18);
+      osc.start(t + i * 0.12);
+      osc.stop(t + i * 0.12 + 0.2);
+    });
+  }
+
+  // ── Auth ─────────────────────────────────────────────────────
   onAuthStateChanged(auth, async (user) => {
     currentUser = user;
     if (user) {
@@ -43,6 +76,8 @@
       document.getElementById("main-section").style.display = "block";
       document.getElementById("user-info").textContent = user.displayName || user.email;
       await loadMyData();
+      // Attach submit listener now that DOM is visible
+      document.getElementById("submit-btn").addEventListener("click", submitOutfit);
     } else {
       document.getElementById("login-section").style.display = "flex";
       document.getElementById("main-section").style.display = "none";
@@ -60,35 +95,27 @@
 
   window.logout = async function() {
     await signOut(auth);
-    myOutfitId = null;
-    myVoteId = null;
-    myVotedForId = null;
+    myOutfitId = null; myVoteId = null; myVotedForId = null;
   };
 
-  // ── Load user's existing outfit and vote ───────────────────
+  // ── Load my data ─────────────────────────────────────────────
   async function loadMyData() {
     if (!currentUser) return;
-
-    // My outfit
     const myOutfitQ = query(outfitsRef, where("uid", "==", currentUser.uid));
     const myOutfitSnap = await getDocs(myOutfitQ);
-    if (!myOutfitSnap.empty) {
-      myOutfitId = myOutfitSnap.docs[0].id;
-    }
+    if (!myOutfitSnap.empty) myOutfitId = myOutfitSnap.docs[0].id;
 
-    // My vote
     const myVoteQ = query(votesRef, where("uid", "==", currentUser.uid));
     const myVoteSnap = await getDocs(myVoteQ);
     if (!myVoteSnap.empty) {
       myVoteId = myVoteSnap.docs[0].id;
       myVotedForId = myVoteSnap.docs[0].data().outfitId;
     }
-
     renderForm();
   }
 
-  // ── Submit / Edit outfit ────────────────────────────────────
-  window.submitOutfit = async function() {
+  // ── Submit / Edit ─────────────────────────────────────────────
+  async function submitOutfit() {
     if (!currentUser) return;
     const descInput = document.getElementById("outfit-desc");
     const desc = descInput.value.trim();
@@ -100,23 +127,13 @@
 
     try {
       if (myOutfitId) {
-        // Edit existing — reset votes
         await updateDoc(doc(db, "outfits", myOutfitId), {
-          description: desc,
-          votes: 0,
-          updatedAt: serverTimestamp()
+          description: desc, votes: 0, updatedAt: serverTimestamp()
         });
-        // Delete all votes for this outfit
-        const votesForOutfit = query(votesRef, where("outfitId", "==", myOutfitId));
-        const snap = await getDocs(votesForOutfit);
-        for (const v of snap.docs) await deleteDoc(v.ref);
-        // Reset local vote tracking if someone voted for this
-        if (myVotedForId === myOutfitId) {
-          myVoteId = null;
-          myVotedForId = null;
-        }
+        const votesSnap = await getDocs(query(votesRef, where("outfitId", "==", myOutfitId)));
+        for (const v of votesSnap.docs) await deleteDoc(v.ref);
+        if (myVotedForId === myOutfitId) { myVoteId = null; myVotedForId = null; }
       } else {
-        // New outfit
         const docRef = await addDoc(outfitsRef, {
           uid: currentUser.uid,
           name: currentUser.displayName || "Anonym",
@@ -133,67 +150,80 @@
 
     btn.disabled = false;
     btn.textContent = myOutfitId ? "Lagre endringer" : "Send inn forslag";
-  };
+  }
 
   function renderForm() {
-    const formBox = document.getElementById("form-box");
     const descInput = document.getElementById("outfit-desc");
     const submitBtn = document.getElementById("submit-btn");
     const formLabel = document.getElementById("form-main-label");
+    if (!descInput || !submitBtn || !formLabel) return;
 
     if (myOutfitId) {
-      // Find my outfit description from loaded data
       const mine = allOutfits.find(o => o.id === myOutfitId);
       if (mine) descInput.value = mine.description;
       submitBtn.textContent = "Lagre endringer";
       formLabel.textContent = "Ditt forslag (rediger og lagre — stemmer nullstilles)";
     } else {
-      descInput.value = "";
+      if (!descInput.value) descInput.value = "";
       submitBtn.textContent = "Send inn forslag";
       formLabel.textContent = "Antrekkforslag";
     }
   }
 
-  // ── Vote ────────────────────────────────────────────────────
+  // ── Vote ──────────────────────────────────────────────────────
   async function voteForOutfit(outfitId) {
     if (!currentUser) return;
-
-    // Can't vote for own outfit
-    if (outfitId === myOutfitId) {
-      alert("Du kan ikke stemme på ditt eget forslag.");
-      return;
-    }
+    if (outfitId === myOutfitId) { alert("Du kan ikke stemme på ditt eget forslag."); return; }
 
     if (myVotedForId === outfitId) {
-      // Unvote
       if (myVoteId) await deleteDoc(doc(db, "votes", myVoteId));
       await updateDoc(doc(db, "outfits", outfitId), { votes: increment(-1) });
-      myVoteId = null;
-      myVotedForId = null;
+      myVoteId = null; myVotedForId = null;
     } else {
-      // Remove old vote
       if (myVoteId) {
         await deleteDoc(doc(db, "votes", myVoteId));
-        if (myVotedForId) {
-          await updateDoc(doc(db, "outfits", myVotedForId), { votes: increment(-1) });
-        }
+        if (myVotedForId) await updateDoc(doc(db, "outfits", myVotedForId), { votes: increment(-1) });
       }
-      // Add new vote
       const vRef = await addDoc(votesRef, { uid: currentUser.uid, outfitId });
       await updateDoc(doc(db, "outfits", outfitId), { votes: increment(1) });
-      myVoteId = vRef.id;
-      myVotedForId = outfitId;
+      myVoteId = vRef.id; myVotedForId = outfitId;
     }
   }
 
-  // ── Admin ───────────────────────────────────────────────────
+  document.getElementById("cards-container").addEventListener("click", (e) => {
+    const btn = e.target.closest(".vote-btn");
+    if (btn) voteForOutfit(btn.dataset.id);
+  });
+
+  // ── Admin ─────────────────────────────────────────────────────
   window.openAdmin = function() {
-    document.getElementById("admin-overlay").style.display = "flex";
+    audioCtx.resume();
+    const overlay = document.getElementById("admin-overlay");
+    overlay.style.display = "flex";
     document.getElementById("admin-pass-input").value = "";
-    document.getElementById("admin-pass-input").focus();
     document.getElementById("admin-error").style.display = "none";
     document.getElementById("admin-panel-content").style.display = "none";
     document.getElementById("admin-login-box").style.display = "block";
+
+    // Scanning animation
+    const scanEl = document.getElementById("admin-scanning");
+    const passBox = document.getElementById("admin-pass-box");
+    scanEl.style.display = "block";
+    passBox.style.display = "none";
+
+    let dots = 0;
+    const interval = setInterval(() => {
+      dots = (dots + 1) % 4;
+      scanEl.textContent = "// SKANNER" + ".".repeat(dots);
+    }, 300);
+
+    setTimeout(() => {
+      clearInterval(interval);
+      scanEl.style.display = "none";
+      passBox.style.display = "block";
+      document.getElementById("admin-pass-input").focus();
+      playPowerUp();
+    }, 1800);
   };
 
   window.closeAdmin = function() {
@@ -209,30 +239,41 @@
       document.getElementById("admin-panel-content").style.display = "block";
       renderAdminList();
     } else {
-      document.getElementById("admin-error").style.display = "block";
+      playAccessDenied();
+      const errEl = document.getElementById("admin-error");
+      errEl.style.display = "block";
+      errEl.classList.remove("blink");
+      void errEl.offsetWidth;
+      errEl.classList.add("blink");
       shake(document.getElementById("admin-pass-input"));
     }
   };
 
-  document.getElementById("admin-pass-input")?.addEventListener("keydown", (e) => {
+  document.getElementById("admin-pass-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter") window.adminLogin();
   });
 
-  async function adminDeleteOutfit(id) {
-    if (!confirm("Slett dette forslaget? Alle stemmer på det slettes også.")) return;
-    // Delete votes for this outfit
-    const votesForOutfit = query(votesRef, where("outfitId", "==", id));
-    const snap = await getDocs(votesForOutfit);
-    for (const v of snap.docs) await deleteDoc(v.ref);
+  async function adminDeleteOutfit(id, rowEl) {
+    if (!confirm("Slett dette forslaget?")) return;
+
+    // TERMINATED animation
+    rowEl.classList.add("terminated");
+    await new Promise(r => setTimeout(r, 700));
+
+    const votesSnap = await getDocs(query(votesRef, where("outfitId", "==", id)));
+    for (const v of votesSnap.docs) await deleteDoc(v.ref);
     await deleteDoc(doc(db, "outfits", id));
     renderAdminList();
   }
 
   function renderAdminList() {
     const list = document.getElementById("admin-list");
+    const totalVotes = allOutfits.reduce((s, o) => s + (o.votes || 0), 0);
+    document.getElementById("admin-stats").innerHTML =
+      `STATUS: <span>ONLINE</span> · FORSLAG: <span>${allOutfits.length}</span> · STEMMER: <span>${totalVotes}</span>`;
     list.innerHTML = "";
     if (allOutfits.length === 0) {
-      list.innerHTML = '<div class="admin-empty">Ingen forslag ennå.</div>';
+      list.innerHTML = '<div class="admin-empty">// INGEN FORSLAG</div>';
       return;
     }
     allOutfits.forEach(o => {
@@ -243,20 +284,23 @@
           <div class="admin-row-desc">${escapeHtml(o.description)}</div>
           <div class="admin-row-meta">${escapeHtml(o.name)} · ${o.votes} stemmer</div>
         </div>
-        <button class="admin-delete-btn" data-id="${o.id}">SLETT</button>
+        <button class="admin-delete-btn">SLETT</button>
       `;
-      row.querySelector(".admin-delete-btn").addEventListener("click", () => adminDeleteOutfit(o.id));
+      row.querySelector(".admin-delete-btn").addEventListener("click", () => adminDeleteOutfit(o.id, row));
       list.appendChild(row);
     });
   }
 
-  // ── Realtime listener ───────────────────────────────────────
+  // ── Realtime ──────────────────────────────────────────────────
   const q = query(outfitsRef, orderBy("votes", "desc"));
   onSnapshot(q, (snapshot) => {
     allOutfits = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 
     const container = document.getElementById("cards-container");
     const empty = document.getElementById("empty-state");
+    const totalVotes = allOutfits.reduce((s, o) => s + (o.votes || 0), 0);
+    const counterEl = document.getElementById("vote-counter");
+    if (counterEl) counterEl.textContent = `${totalVotes} stemme${totalVotes !== 1 ? "r" : ""} totalt`;
 
     if (snapshot.empty) {
       container.innerHTML = "";
@@ -269,7 +313,6 @@
         const id = data.id;
         const isVoted = myVotedForId === id;
         const isOwn = myOutfitId === id;
-
         const card = document.createElement("div");
         card.className = "card" + (rank === 1 && data.votes > 0 ? " leading" : "") + (isOwn ? " own" : "");
         card.innerHTML = `
@@ -295,12 +338,7 @@
     if (isAdmin) renderAdminList();
   });
 
-  document.getElementById("cards-container").addEventListener("click", (e) => {
-    const btn = e.target.closest(".vote-btn");
-    if (btn) voteForOutfit(btn.dataset.id);
-  });
-
-  // ── Helpers ─────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────
   function escapeHtml(str) {
     if (!str) return "";
     return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -327,7 +365,6 @@
     --leading-border: #3a6bff;
     --own-bg: #f5fff5;
     --own-border: #b0e0b0;
-    /* Tony Stark palette */
     --ts-bg: #090e14;
     --ts-panel: #0d1620;
     --ts-border: #1a3a5c;
@@ -348,7 +385,7 @@
     padding: 0 1rem 5rem;
   }
 
-  /* ── Login screen ── */
+  /* ── Login ── */
   #login-section {
     display: flex;
     flex-direction: column;
@@ -364,7 +401,6 @@
     font-family: 'Fraunces', serif;
     font-size: clamp(2rem, 6vw, 3.2rem);
     font-weight: 900;
-    color: var(--text);
   }
 
   #login-section p { color: var(--muted); font-size: 0.95rem; }
@@ -388,13 +424,12 @@
   .google-btn:hover { border-color: var(--accent); color: var(--accent); }
 
   .google-icon {
-    width: 20px; height: 20px;
+    width: 20px; height: 20px; flex-shrink: 0;
     background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23EA4335' d='M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z'/%3E%3Cpath fill='%234285F4' d='M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z'/%3E%3Cpath fill='%23FBBC05' d='M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z'/%3E%3Cpath fill='%2334A853' d='M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z'/%3E%3C/svg%3E") center/contain no-repeat;
   }
 
-  /* ── Main section ── */
+  /* ── Main ── */
   #main-section { display: none; }
-
   .container { max-width: 620px; margin: 0 auto; }
 
   header { text-align: center; padding: 3rem 0 2.5rem; }
@@ -427,37 +462,46 @@
     color: var(--muted);
   }
 
-  .topbar-right { display: flex; gap: 0.5rem; align-items: center; }
+  .topbar-right { display: flex; gap: 0.6rem; align-items: center; }
 
   .text-btn {
-    background: none;
-    border: none;
+    background: none; border: none;
     font-family: 'DM Sans', sans-serif;
     font-size: 0.82rem;
-    cursor: pointer;
-    color: var(--muted);
-    padding: 0.2rem 0;
+    cursor: pointer; color: var(--muted);
     transition: color 0.15s;
   }
 
   .text-btn:hover { color: var(--text); }
   .text-btn.danger:hover { color: #e04040; }
 
+  /* Tony Stark admin button */
   .admin-trigger {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.72rem;
-    letter-spacing: 0.08em;
+    background: var(--ts-bg);
+    border: 1px solid var(--ts-accent);
+    border-radius: 3px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
     cursor: pointer;
-    color: var(--muted);
-    padding: 0.25rem 0.6rem;
+    color: var(--ts-accent);
+    padding: 0.28rem 0.65rem;
     transition: all 0.15s;
+    box-shadow: 0 0 6px rgba(0,207,255,0.2);
   }
 
-  .admin-trigger:hover { border-color: var(--ts-accent); color: var(--ts-accent); }
+  .admin-trigger:hover {
+    background: rgba(0,207,255,0.08);
+    box-shadow: 0 0 12px rgba(0,207,255,0.4);
+  }
+
+  .vote-counter {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 1rem;
+    font-family: 'DM Sans', sans-serif;
+  }
 
   /* ── Form ── */
   .form-box {
@@ -533,6 +577,7 @@
     align-items: center;
     gap: 1rem;
     animation: slideIn 0.25s ease;
+    transition: background 0.3s, border-color 0.3s;
   }
 
   .card.leading { background: var(--leading-bg); border-color: var(--leading-border); }
@@ -585,27 +630,16 @@
 
   .voted .vote-count { background: #d0d9ff; color: var(--accent); }
 
-  .vote-count-own {
-    flex-shrink: 0;
-    font-size: 0.78rem;
-    color: var(--muted);
-    white-space: nowrap;
-  }
+  .vote-count-own { flex-shrink: 0; font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
 
-  #empty-state {
-    text-align: center;
-    padding: 3rem 1rem;
-    color: var(--muted);
-    display: none;
-    font-size: 0.88rem;
-  }
+  #empty-state { text-align: center; padding: 3rem 1rem; color: var(--muted); display: none; font-size: 0.88rem; }
 
-  /* ── Admin overlay — Tony Stark ── */
+  /* ── Admin overlay ── */
   #admin-overlay {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.85);
+    background: rgba(0,0,0,0.88);
     z-index: 1000;
     align-items: center;
     justify-content: center;
@@ -617,11 +651,10 @@
     border: 1px solid var(--ts-border);
     border-radius: 4px;
     width: 100%;
-    max-width: 560px;
+    max-width: 540px;
     max-height: 85vh;
     overflow-y: auto;
-    position: relative;
-    box-shadow: 0 0 40px rgba(0, 207, 255, 0.15), 0 0 80px rgba(0,0,0,0.8);
+    box-shadow: 0 0 40px rgba(0,207,255,0.15), 0 0 80px rgba(0,0,0,0.8);
   }
 
   .admin-header {
@@ -638,7 +671,7 @@
 
   .admin-title {
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.78rem;
+    font-size: 0.75rem;
     letter-spacing: 0.2em;
     color: var(--ts-accent);
     text-transform: uppercase;
@@ -651,8 +684,8 @@
     border: 1px solid var(--ts-border);
     color: var(--ts-muted);
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.72rem;
-    padding: 0.3rem 0.7rem;
+    font-size: 0.68rem;
+    padding: 0.3rem 0.65rem;
     cursor: pointer;
     border-radius: 2px;
     transition: all 0.15s;
@@ -661,17 +694,20 @@
 
   .admin-close:hover { border-color: var(--ts-danger); color: var(--ts-danger); }
 
-  /* Login box */
-  #admin-login-box {
-    padding: 2rem 1.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
+  #admin-login-box { padding: 2rem 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+
+  #admin-scanning {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.82rem;
+    color: var(--ts-accent);
+    letter-spacing: 0.15em;
+    min-height: 1.5rem;
+    display: none;
   }
 
   .ts-label {
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     letter-spacing: 0.15em;
     color: var(--ts-muted);
     text-transform: uppercase;
@@ -700,7 +736,7 @@
     border: 1px solid var(--ts-accent);
     color: var(--ts-accent);
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.78rem;
+    font-size: 0.75rem;
     letter-spacing: 0.15em;
     text-transform: uppercase;
     padding: 0.75rem 1rem;
@@ -709,7 +745,7 @@
     transition: all 0.15s;
   }
 
-  .ts-btn:hover { background: rgba(0, 207, 255, 0.08); box-shadow: 0 0 12px rgba(0,207,255,0.2); }
+  .ts-btn:hover { background: rgba(0,207,255,0.08); box-shadow: 0 0 12px rgba(0,207,255,0.2); }
 
   #admin-error {
     display: none;
@@ -719,12 +755,18 @@
     letter-spacing: 0.1em;
   }
 
-  /* Panel content */
+  #admin-error.blink { animation: blinkRed 0.15s ease 3; }
+
+  @keyframes blinkRed {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
   #admin-panel-content { padding: 1.25rem 1.5rem; display: none; }
 
   .admin-stats {
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     color: var(--ts-muted);
     letter-spacing: 0.1em;
     margin-bottom: 1.25rem;
@@ -744,27 +786,29 @@
     border: 1px solid var(--ts-border);
     border-radius: 2px;
     padding: 0.85rem 1rem;
-    transition: border-color 0.15s;
+    transition: border-color 0.15s, opacity 0.4s;
   }
 
   .admin-row:hover { border-color: rgba(0,207,255,0.3); }
 
-  .admin-row-info { flex: 1; min-width: 0; }
-
-  .admin-row-desc {
-    font-size: 0.88rem;
-    color: var(--ts-text);
-    line-height: 1.4;
-    word-break: break-word;
+  .admin-row.terminated {
+    border-color: var(--ts-danger) !important;
+    opacity: 0;
   }
 
-  .admin-row-meta {
+  .admin-row.terminated::after {
+    content: "// TERMINATED";
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.66rem;
-    color: var(--ts-muted);
-    margin-top: 0.25rem;
-    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    color: var(--ts-danger);
+    letter-spacing: 0.15em;
+    position: absolute;
+    pointer-events: none;
   }
+
+  .admin-row-info { flex: 1; min-width: 0; position: relative; }
+  .admin-row-desc { font-size: 0.88rem; color: var(--ts-text); line-height: 1.4; word-break: break-word; }
+  .admin-row-meta { font-family: 'Share Tech Mono', monospace; font-size: 0.64rem; color: var(--ts-muted); margin-top: 0.25rem; letter-spacing: 0.08em; }
 
   .admin-delete-btn {
     flex-shrink: 0;
@@ -772,7 +816,7 @@
     border: 1px solid var(--ts-danger);
     color: var(--ts-danger);
     font-family: 'Share Tech Mono', monospace;
-    font-size: 0.65rem;
+    font-size: 0.64rem;
     letter-spacing: 0.12em;
     padding: 0.3rem 0.6rem;
     cursor: pointer;
@@ -809,7 +853,7 @@
 </head>
 <body>
 
-<!-- Login screen -->
+<!-- Login -->
 <div id="login-section">
   <div class="eyebrow">Klasseavstemning</div>
   <h1>Hva skal vi ha på oss?</h1>
@@ -820,7 +864,7 @@
   </button>
 </div>
 
-<!-- Main app -->
+<!-- Main -->
 <div id="main-section">
   <div class="container">
     <header>
@@ -832,25 +876,26 @@
     <div class="topbar">
       <span id="user-info"></span>
       <div class="topbar-right">
-        <button class="admin-trigger" onclick="openAdmin()">Admin</button>
+        <button class="admin-trigger" onclick="openAdmin()">⬡ ADMIN</button>
         <button class="text-btn danger" onclick="logout()">Logg ut</button>
       </div>
     </div>
 
-    <div class="form-box" id="form-box">
+    <div class="form-box">
       <label class="form-label" id="form-main-label">Antrekkforslag</label>
       <textarea id="outfit-desc" placeholder="f.eks. Blå jeans med hvit t-skjorte"></textarea>
       <button id="submit-btn">Send inn forslag</button>
     </div>
 
     <div class="section-title">Alle forslag — rangert etter stemmer</div>
+    <div class="vote-counter" id="vote-counter"></div>
 
     <div id="empty-state"><p>Ingen forslag ennå.</p></div>
     <div id="cards-container"></div>
   </div>
 </div>
 
-<!-- Admin overlay -->
+<!-- Admin -->
 <div id="admin-overlay" onclick="if(event.target===this)closeAdmin()">
   <div class="admin-modal">
     <div class="admin-header">
@@ -859,16 +904,19 @@
     </div>
 
     <div id="admin-login-box">
-      <div>
-        <span class="ts-label">Tilgangskode</span>
-        <input type="password" id="admin-pass-input" placeholder="••••••••••••">
+      <div id="admin-scanning">// SKANNER...</div>
+      <div id="admin-pass-box" style="display:none; display:flex; flex-direction:column; gap:1rem;">
+        <div>
+          <span class="ts-label">Tilgangskode</span>
+          <input type="password" id="admin-pass-input" placeholder="••••••••••">
+        </div>
+        <div id="admin-error">// FEIL TILGANGSKODE — TILGANG NEKTET</div>
+        <button class="ts-btn" onclick="adminLogin()">[ BEKREFT TILGANG ]</button>
       </div>
-      <div id="admin-error">// FEIL TILGANGSKODE. PRØV IGJEN.</div>
-      <button class="ts-btn" onclick="adminLogin()">[ BEKREFT TILGANG ]</button>
     </div>
 
     <div id="admin-panel-content">
-      <div class="admin-stats">STATUS: <span>ONLINE</span> · TILGANG: <span>FULL</span></div>
+      <div class="admin-stats" id="admin-stats">STATUS: <span>ONLINE</span></div>
       <div id="admin-list"></div>
     </div>
   </div>
