@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Antrekksstemning</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@700;900&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+  import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, increment, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+
+  // ============================================================
+  // 🔧 LIMER INN FIREBASE-KONFIGURASJONEN DIN HER
+  // Gå til console.firebase.google.com → nytt prosjekt → nettapp
+  // ============================================================
+  // Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyCMp4H6bZnW4boNS--6h3H1KcZHIk7kxpQ",
+  authDomain: "danse-avstemming.firebaseapp.com",
+  projectId: "danse-avstemming",
+  storageBucket: "danse-avstemming.firebasestorage.app",
+  messagingSenderId: "1097339063111",
+  appId: "1:1097339063111:web:8e0b8a6632f3b3de659a62"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+  // ============================================================
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const outfitsRef = collection(db, "outfits");
+
+  const votedItems = new Set(JSON.parse(localStorage.getItem("voted") || "[]"));
+
+  function saveVoted() {
+    localStorage.setItem("voted", JSON.stringify([...votedItems]));
+  }
+
+  document.getElementById("submit-btn").addEventListener("click", submitOutfit);
+
+  async function submitOutfit() {
+    const nameInput = document.getElementById("suggester-name");
+    const descInput = document.getElementById("outfit-desc");
+    const name = nameInput.value.trim();
+    const desc = descInput.value.trim();
+
+    if (!desc) {
+      shake(descInput);
+      return;
+    }
+
+    const btn = document.getElementById("submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Sender inn...";
+
+    try {
+      await addDoc(outfitsRef, {
+        name: name || "Anonym",
+        description: desc,
+        votes: 0,
+        createdAt: serverTimestamp()
+      });
+      nameInput.value = "";
+      descInput.value = "";
+    } catch (e) {
+      alert("Feil: " + e.message);
+    }
+
+    btn.disabled = false;
+    btn.textContent = "Send inn forslag";
+  };
+
+  async function voteForOutfit(id) {
+    if (votedItems.has(id)) return;
+    votedItems.add(id);
+    saveVoted();
+    const outfitDoc = doc(db, "outfits", id);
+    await updateDoc(outfitDoc, { votes: increment(1) });
+  };
+
+  document.getElementById("cards-container").addEventListener("click", (e) => {
+    const btn = e.target.closest(".vote-btn");
+    if (btn && !btn.disabled) {
+      voteForOutfit(btn.dataset.id);
+    }
+  });
+
+  const q = query(outfitsRef, orderBy("votes", "desc"));
+  onSnapshot(q, (snapshot) => {
+    const container = document.getElementById("cards-container");
+    const empty = document.getElementById("empty-state");
+
+    if (snapshot.empty) {
+      container.innerHTML = "";
+      empty.style.display = "block";
+      return;
+    }
+
+    empty.style.display = "none";
+    container.innerHTML = "";
+
+    let rank = 1;
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      const id = docSnap.id;
+      const hasVoted = votedItems.has(id);
+
+      const card = document.createElement("div");
+      card.className = "card" + (rank === 1 && data.votes > 0 ? " leading" : "");
+      card.innerHTML = `
+        <div class="card-rank">${"#" + rank}</div>
+        <div class="card-content">
+          <div class="card-desc">${escapeHtml(data.description)}</div>
+          <div class="card-meta">foreslått av <span>${escapeHtml(data.name)}</span></div>
+        </div>
+        <button class="vote-btn ${hasVoted ? "voted" : ""}" data-id="${id}" ${hasVoted ? "disabled" : ""}>
+          ${hasVoted ? "✓ Stemt" : "Stem"}
+          <span class="vote-count">${data.votes}</span>
+        </button>
+      `;
+      container.appendChild(card);
+      rank++;
+    });
+  });
+
+  function escapeHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  function shake(el) {
+    el.style.animation = "none";
+    el.offsetHeight;
+    el.style.animation = "shake 0.4s ease";
+  }
+</script>
+
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --card: #ffffff;
+    --accent: #3a6bff;
+    --accent-light: #eef1ff;
+    --text: #111111;
+    --muted: #999;
+    --border: #e4e2dc;
+    --leading-bg: #eef1ff;
+    --leading-border: #3a6bff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 0 1rem 5rem;
+  }
+
+  .container {
+    max-width: 620px;
+    margin: 0 auto;
+  }
+
+  header {
+    text-align: center;
+    padding: 3.5rem 0 2.5rem;
+  }
+
+  .eyebrow {
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.75rem;
+  }
+
+  h1 {
+    font-family: 'Fraunces', serif;
+    font-size: clamp(2.4rem, 7vw, 3.8rem);
+    font-weight: 900;
+    line-height: 1.05;
+    color: var(--text);
+    margin-bottom: 0.6rem;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.95rem;
+    font-weight: 300;
+  }
+
+  .form-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.75rem;
+    margin-bottom: 2rem;
+  }
+
+  .form-label {
+    display: block;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.45rem;
+    margin-top: 1.1rem;
+  }
+
+  .form-label:first-child { margin-top: 0; }
+
+  input, textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    padding: 0.75rem 1rem;
+    transition: border-color 0.2s;
+    outline: none;
+    resize: vertical;
+  }
+
+  input::placeholder, textarea::placeholder { color: #bbb; }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  textarea { min-height: 90px; }
+
+  #submit-btn {
+    margin-top: 1.25rem;
+    width: 100%;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 500;
+    padding: 0.85rem;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+  }
+
+  #submit-btn:hover { opacity: 0.88; }
+  #submit-btn:active { transform: scale(0.98); }
+  #submit-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .section-title {
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.85rem;
+  }
+
+  #cards-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.1rem 1.1rem 1.1rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    animation: slideIn 0.25s ease;
+  }
+
+  .card.leading {
+    background: var(--leading-bg);
+    border-color: var(--leading-border);
+  }
+
+  .card-rank {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #ccc;
+    min-width: 2rem;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .card.leading .card-rank { color: var(--accent); }
+
+  .card-content { flex: 1; min-width: 0; }
+
+  .card-desc {
+    font-size: 0.96rem;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .card-meta {
+    margin-top: 0.25rem;
+    font-size: 0.74rem;
+    color: var(--muted);
+  }
+
+  .card-meta span {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .vote-btn {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 50px;
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.82rem;
+    padding: 0.45rem 0.8rem;
+    cursor: pointer;
+    transition: all 0.18s;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+  }
+
+  .vote-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-light);
+  }
+
+  .vote-btn.voted {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-light);
+    cursor: default;
+  }
+
+  .vote-count {
+    background: var(--border);
+    border-radius: 20px;
+    padding: 0.1rem 0.45rem;
+    font-weight: 500;
+    font-size: 0.78rem;
+  }
+
+  .voted .vote-count {
+    background: #d0d9ff;
+    color: var(--accent);
+  }
+
+  #empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--muted);
+    display: none;
+    font-size: 0.88rem;
+  }
+
+  .config-warning {
+    background: #fff5f5;
+    border: 1px solid #f5c0c0;
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.88rem;
+    color: #c04040;
+    line-height: 1.6;
+  }
+
+  .config-warning strong { display: block; margin-bottom: 0.2rem; font-weight: 600; }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-6px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="eyebrow">Klasseavstemning</div>
+    <h1>Hva skal vi ha på oss?</h1>
+    <p class="subtitle">Send inn forslag og stem på favoritten din.</p>
+  </header>
+
+  <div class="config-warning" id="config-warning">
+    <strong>Oppsett kreves</strong>
+    Du må legge inn Firebase-konfigurasjonen din. Se README-filen — tar ca. 5 minutter og er gratis.
+  </div>
+
+  <div class="form-box">
+    <label class="form-label" for="suggester-name">Navnet ditt (valgfritt)</label>
+    <input type="text" id="suggester-name" placeholder="Navn">
+
+    <label class="form-label" for="outfit-desc">Antrekkforslag *</label>
+    <textarea id="outfit-desc" placeholder="f.eks. Blå jeans med hvit t-skjorte"></textarea>
+
+    <button id="submit-btn">Send inn forslag</button>
+  </div>
+
+  <div class="section-title">Alle forslag — rangert etter stemmer</div>
+
+  <div id="empty-state">
+    <p>Ingen forslag ennå.</p>
+  </div>
+
+  <div id="cards-container"></div>
+</div>
+
+<script type="module">
+  setTimeout(() => {
+    const w = document.getElementById("config-warning");
+    if (w) w.style.display = "none";
+  }, 3000);
+</script>
+</body>
+</html>
