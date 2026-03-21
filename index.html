@@ -64,11 +64,16 @@
   }
 
   async function voteForOutfit(id) {
-    if (votedItems.has(id)) return;
-    votedItems.add(id);
-    saveVoted();
     const outfitDoc = doc(db, "outfits", id);
-    await updateDoc(outfitDoc, { votes: increment(1) });
+    if (votedItems.has(id)) {
+      votedItems.delete(id);
+      saveVoted();
+      await updateDoc(outfitDoc, { votes: increment(-1) });
+    } else {
+      votedItems.add(id);
+      saveVoted();
+      await updateDoc(outfitDoc, { votes: increment(1) });
+    }
   }
 
   document.getElementById("cards-container").addEventListener("click", (e) => {
@@ -106,7 +111,7 @@
           <div class="card-desc">${escapeHtml(data.description)}</div>
           <div class="card-meta">foreslått av <span>${escapeHtml(data.name)}</span></div>
         </div>
-        <button class="vote-btn ${hasVoted ? "voted" : ""}" data-id="${id}" ${hasVoted ? "disabled" : ""}>
+        <button class="vote-btn ${hasVoted ? "voted" : ""}" data-id="${id}">
           ${hasVoted ? "✓ Stemt" : "Stem"}
           <span class="vote-count">${data.votes}</span>
         </button>
