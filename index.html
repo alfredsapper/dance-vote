@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Antrekksavstemning</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpolygon points='50,5 93,27.5 93,72.5 50,95 7,72.5 7,27.5' fill='none' stroke='%2300cfff' stroke-width='6'/%3E%3Cpolygon points='50,20 78,35 78,65 50,80 22,65 22,35' fill='%2300cfff' opacity='0.15'/%3E%3Ccircle cx='50' cy='50' r='12' fill='%2300cfff' opacity='0.9'/%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@700;900&family=DM+Sans:wght@300;400;500&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 
 <script type="module">
@@ -39,33 +40,79 @@
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
   function playPowerUp() {
+    // Iron Man suit-up style: deep hum builds then bright chord
     const t = audioCtx.currentTime;
-    [220, 440, 660, 880].forEach((freq, i) => {
+
+    // Deep bass hum
+    const bass = audioCtx.createOscillator();
+    const bassGain = audioCtx.createGain();
+    bass.connect(bassGain); bassGain.connect(audioCtx.destination);
+    bass.type = "sine"; bass.frequency.setValueAtTime(60, t);
+    bass.frequency.linearRampToValueAtTime(120, t + 0.4);
+    bassGain.gain.setValueAtTime(0, t);
+    bassGain.gain.linearRampToValueAtTime(0.3, t + 0.15);
+    bassGain.gain.linearRampToValueAtTime(0, t + 0.5);
+    bass.start(t); bass.stop(t + 0.5);
+
+    // Rising arpeggio
+    [261, 329, 392, 523, 659, 784].forEach((freq, i) => {
       const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain); gain.connect(audioCtx.destination);
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(freq, t + i * 0.08);
-      gain.gain.setValueAtTime(0.18, t + i * 0.08);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.08 + 0.15);
-      osc.start(t + i * 0.08);
-      osc.stop(t + i * 0.08 + 0.2);
+      const g = audioCtx.createGain();
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0, t + 0.1 + i * 0.07);
+      g.gain.linearRampToValueAtTime(0.15, t + 0.12 + i * 0.07);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.25 + i * 0.07);
+      osc.start(t + 0.1 + i * 0.07);
+      osc.stop(t + 0.35 + i * 0.07);
+    });
+
+    // Final bright chord
+    [523, 659, 784].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.type = "sine"; osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.12, t + 0.65);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
+      osc.start(t + 0.65); osc.stop(t + 1.2);
     });
   }
 
   function playAccessDenied() {
     const t = audioCtx.currentTime;
-    [180, 150, 120].forEach((freq, i) => {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain); gain.connect(audioCtx.destination);
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(freq, t + i * 0.12);
-      gain.gain.setValueAtTime(0.15, t + i * 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.12 + 0.18);
-      osc.start(t + i * 0.12);
-      osc.stop(t + i * 0.12 + 0.2);
-    });
+    // Harsh descending buzz
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    const dist = audioCtx.createWaveShaper();
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) curve[i] = i < 128 ? -1 : 1;
+    dist.curve = curve;
+    osc.connect(dist); dist.connect(g); g.connect(audioCtx.destination);
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(300, t);
+    osc.frequency.exponentialRampToValueAtTime(80, t + 0.5);
+    g.gain.setValueAtTime(0.2, t);
+    g.gain.setValueAtTime(0.2, t + 0.1);
+    g.gain.setValueAtTime(0, t + 0.15);
+    g.gain.setValueAtTime(0.2, t + 0.2);
+    g.gain.setValueAtTime(0, t + 0.25);
+    g.gain.setValueAtTime(0.2, t + 0.3);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+    osc.start(t); osc.stop(t + 0.6);
+  }
+
+  function playScanBeep(idx) {
+    const t = audioCtx.currentTime;
+    const freqs = [400, 480, 520, 600, 440];
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.type = "sine"; osc.frequency.value = freqs[idx % freqs.length];
+    g.gain.setValueAtTime(0.1, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    osc.start(t); osc.stop(t + 0.12);
   }
 
   // ── Auth ─────────────────────────────────────────────────────
@@ -199,6 +246,18 @@
   window.openAdmin = function() {
     audioCtx.resume();
 
+    // Initial scan activation sound
+    const t0 = audioCtx.currentTime;
+    const initOsc = audioCtx.createOscillator();
+    const initGain = audioCtx.createGain();
+    initOsc.connect(initGain); initGain.connect(audioCtx.destination);
+    initOsc.type = "sine";
+    initOsc.frequency.setValueAtTime(200, t0);
+    initOsc.frequency.linearRampToValueAtTime(600, t0 + 0.3);
+    initGain.gain.setValueAtTime(0.15, t0);
+    initGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+    initOsc.start(t0); initOsc.stop(t0 + 0.4);
+
     // Fullscreen scan overlay
     const scanOverlay = document.getElementById("scan-overlay");
     const scanLine = document.getElementById("scan-line");
@@ -232,14 +291,7 @@
       idx++;
       if (idx < msgs.length) {
         scanText.textContent = msgs[idx];
-        // beep per message
-        const o = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
-        o.connect(g); g.connect(audioCtx.destination);
-        o.type = "sine"; o.frequency.value = 400 + idx * 80;
-        g.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
-        o.start(); o.stop(audioCtx.currentTime + 0.15);
+        playScanBeep(idx);
       } else {
         clearInterval(interval);
         setTimeout(() => {
@@ -674,6 +726,15 @@
 
   #empty-state { text-align: center; padding: 3rem 1rem; color: var(--muted); display: none; font-size: 0.88rem; }
 
+  .credit {
+    text-align: center;
+    margin-top: 3rem;
+    font-size: 0.68rem;
+    color: #ccc;
+    letter-spacing: 0.08em;
+    font-family: 'DM Sans', sans-serif;
+  }
+
   /* ── Fullscreen scan overlay ── */
   #scan-overlay {
     display: none;
@@ -1016,6 +1077,7 @@
 
     <div id="empty-state"><p>Ingen forslag ennå.</p></div>
     <div id="cards-container"></div>
+    <div class="credit">vibe-kodet av Alfred</div>
   </div>
 </div>
 
