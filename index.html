@@ -95,8 +95,12 @@
         msg.volume = 1;
         // Pick a deep voice if available
         const voices = window.speechSynthesis.getVoices();
-        const deepVoice = voices.find(v => v.name.includes("Google UK English Male") || v.name.includes("Daniel") || v.name.includes("Male"));
+        const deepVoice = voices.find(v => v.lang === "en-US" && v.name.toLowerCase().includes("male"))
+          || voices.find(v => v.lang === "en-US" && !v.name.toLowerCase().includes("female"))
+          || voices.find(v => v.lang === "en-US")
+          || voices.find(v => v.lang.startsWith("en"));
         if (deepVoice) msg.voice = deepVoice;
+        msg.lang = "en-US";
         window.speechSynthesis.speak(msg);
       }
     }, 2600);
@@ -456,7 +460,7 @@
     so.style.display="flex";
     const msgs=["// INITIALISERER...","// KOBLER TIL JARVIS...","// VERIFISERER IDENTITET...","// LASTER BRUKERDATA...","// TILGANG KLAR"];
     let idx=0;st.textContent=msgs[0];
-    const iv=setInterval(()=>{idx++;if(idx<msgs.length){st.textContent=msgs[idx];playScanBeep(idx);}else{clearInterval(iv);setTimeout(()=>{so.style.display="none";const ov=document.getElementById("admin-overlay");ov.style.display="flex";document.getElementById("admin-pass-input").value="";document.getElementById("admin-error").style.display="none";document.getElementById("admin-panel-content").style.display="none";document.getElementById("admin-login-box").style.display="block";document.getElementById("admin-scanning").style.display="none";document.getElementById("admin-pass-box").style.display="flex";document.getElementById("admin-pass-input").focus();playPowerUp();playJarvisWelcome();},300);}},380);
+    const iv=setInterval(()=>{idx++;if(idx<msgs.length){st.textContent=msgs[idx];playScanBeep(idx);}else{clearInterval(iv);setTimeout(()=>{so.style.display="none";const ov=document.getElementById("admin-overlay");ov.style.display="flex";document.getElementById("admin-pass-input").value="";document.getElementById("admin-error").style.display="none";document.getElementById("admin-panel-content").style.display="none";document.getElementById("admin-login-box").style.display="block";document.getElementById("admin-scanning").style.display="none";document.getElementById("admin-pass-box").style.display="flex";document.getElementById("admin-pass-input").focus();playPowerUp();},300);}},380);
   };
 
   window.closeAdmin=function(){document.getElementById("admin-overlay").style.display="none";isAdmin=false;};
@@ -465,6 +469,7 @@
     const pass=document.getElementById("admin-pass-input").value;
     if(pass===ADMIN_PASSWORD){
       isAdmin=true;document.getElementById("admin-login-box").style.display="none";document.getElementById("admin-panel-content").style.display="block";
+      playJarvisWelcome();
       renderAdminControls();renderAdminList();renderAdminUsers();
     }else{
       playAccessDenied();const e=document.getElementById("admin-error");e.style.display="block";e.classList.remove("blink");void e.offsetWidth;e.classList.add("blink");shake(document.getElementById("admin-pass-input"));
