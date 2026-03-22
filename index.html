@@ -20,206 +20,334 @@
     appId: "1:1097339063111:web:8e0b8a6632f3b3de659a62"
   };
 
+  const ADMIN_UID_KEY = "adminConfirmed";
   const ADMIN_PASSWORD = "dans#pannekake";
-  const AVATAR_COLORS = ["#3a6bff","#00cfff","#ff6a00","#00c853","#e040fb","#ff1744","#ff9100","#00bcd4","#76ff03","#f50057"];
+  const PRESET_AVATARS = ["🐶","🐱","🦊","🐻","🐼","🦁","🐯","🐸","🦋","🌟","🔥","⚡","🎸","🎭","🚀","🛸","💎","🎯","🏆","👾"];
 
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
   const auth = getAuth(app);
-  const outfitsRef = collection(db,"outfits");
-  const votesRef = collection(db,"votes");
-  const chatRef = collection(db,"chat");
-  const dmsRef = collection(db,"dms");
-  const usersRef = collection(db,"users");
-  const settingsRef = doc(db,"settings","global");
+  const outfitsRef = collection(db, "outfits");
+  const votesRef = collection(db, "votes");
+  const chatRef = collection(db, "chat");
+  const dmsRef = collection(db, "dms");
+  const usersRef = collection(db, "users");
+  const settingsRef = doc(db, "settings", "global");
 
-  let currentUser=null, myProfile=null, isAdmin=false;
-  let myOutfitId=null, myVoteId=null, myVotedForId=null;
-  let allOutfits=[], allChatMessages=[], allUsers=[], allDMs=[];
-  let activeDMUser=null;
-  let settings={locked:false,hideScores:false,countdown:null,chatEnabled:true,defaultCooldown:20};
-  let lastChatTime=0, chatCooldownInterval=null, countdownInterval=null, presenceInterval=null;
-
-  // ── Avatar helpers ─────────────────────────────────────────
-  function getAvatarColor(username) {
-    let hash=0; for(let c of (username||"?")) hash=(hash<<5)-hash+c.charCodeAt(0);
-    return AVATAR_COLORS[Math.abs(hash)%AVATAR_COLORS.length];
-  }
-
-  function makeInitialAvatar(username, size=32) {
-    const color = getAvatarColor(username);
-    const letter = (username||"?")[0].toUpperCase();
-    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg" style="border-radius:50%;flex-shrink:0"><circle cx="${size/2}" cy="${size/2}" r="${size/2}" fill="${color}"/><text x="${size/2}" y="${size/2+size*0.13}" text-anchor="middle" font-family="DM Sans,sans-serif" font-weight="700" font-size="${size*0.42}" fill="#fff">${letter}</text></svg>`;
-  }
+  let currentUser = null;
+  let myProfile = null; // { username, avatar, avatarType: 'emoji'|'url' }
+  let isAdmin = false;
+  let myOutfitId = null, myVoteId = null, myVotedForId = null;
+  let allOutfits = [], allChatMessages = [], allUsers = [], allDMs = [];
+  let activeDMUser = null;
+  let settings = { locked:false, hideScores:false, countdown:null, chatEnabled:true, defaultCooldown:20 };
+  let lastChatTime = 0, chatCooldownInterval = null, countdownInterval = null, presenceInterval = null;
 
   // ── Audio ──────────────────────────────────────────────────
   const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
 
   function playJarvisWelcome() {
     const t = audioCtx.currentTime + 0.2;
-    function guitarNote(freq,start,dur,vol=0.18){
-      const osc=audioCtx.createOscillator(),gain=audioCtx.createGain(),dist=audioCtx.createWaveShaper();
-      const curve=new Float32Array(256);for(let i=0;i<256;i++){const x=(i*2/256)-1;curve[i]=Math.tanh(x*4)*0.8;}
-      dist.curve=curve;osc.connect(dist);dist.connect(gain);gain.connect(audioCtx.destination);
-      osc.type="sawtooth";osc.frequency.value=freq;
-      gain.gain.setValueAtTime(0,start);gain.gain.linearRampToValueAtTime(vol,start+0.01);
-      gain.gain.setValueAtTime(vol*0.7,start+dur*0.3);gain.gain.exponentialRampToValueAtTime(0.001,start+dur);
-      osc.start(start);osc.stop(start+dur+0.05);
+    function guitarNote(freq, start, dur, vol=0.18) {
+      const osc=audioCtx.createOscillator(), gain=audioCtx.createGain(), dist=audioCtx.createWaveShaper();
+      const curve=new Float32Array(256); for(let i=0;i<256;i++){const x=(i*2/256)-1;curve[i]=Math.tanh(x*4)*0.8;}
+      dist.curve=curve; osc.connect(dist); dist.connect(gain); gain.connect(audioCtx.destination);
+      osc.type="sawtooth"; osc.frequency.value=freq;
+      gain.gain.setValueAtTime(0,start); gain.gain.linearRampToValueAtTime(vol,start+0.01);
+      gain.gain.setValueAtTime(vol*0.7,start+dur*0.3); gain.gain.exponentialRampToValueAtTime(0.001,start+dur);
+      osc.start(start); osc.stop(start+dur+0.05);
     }
     const riff=[[659,0,.12],[659,.13,.08],[784,.22,.12],[659,.35,.12],[587,.48,.12],[659,.61,.22],[659,.9,.12],[659,1.03,.08],[784,1.12,.12],[659,1.25,.12],[587,1.38,.12],[494,1.51,.3]];
     riff.forEach(([f,s,d])=>guitarNote(f,t+s,d));
     [[659,987,1319],[659,987,1319]].forEach(([f1,f2,f3],i)=>{const st=t+1.9+i*0.22;[f1,f2,f3].forEach(f=>guitarNote(f,st,.18,.12));});
     setTimeout(()=>{
       if(!('speechSynthesis' in window))return;
-      const utterance=new SpeechSynthesisUtterance("Welcome home, sir. Good to have you back. The voting data is ready for your review.");
-      utterance.rate=0.82; utterance.pitch=0.4; utterance.volume=1; utterance.lang="en-US";
-      const trySpeak=()=>{
+      const msg=new SpeechSynthesisUtterance("Welcome home, sir. Good to have you back. The voting data is ready for your review.");
+      msg.rate=0.85; msg.pitch=0.5; msg.volume=1; msg.lang="en-US";
+      const setVoice=()=>{
         const voices=window.speechSynthesis.getVoices();
         const v=voices.find(v=>v.lang==="en-US"&&v.name.includes("Google US English"))
-          ||voices.find(v=>v.lang==="en-US"&&!v.name.toLowerCase().match(/female|zira|samantha|karen|moira|victoria/))
+          ||voices.find(v=>v.lang==="en-US"&&!v.name.toLowerCase().match(/female|zira|samantha|karen|moira/))
           ||voices.find(v=>v.lang==="en-US");
-        if(v)utterance.voice=v;
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utterance);
+        if(v)msg.voice=v;
+        window.speechSynthesis.speak(msg);
       };
-      if(window.speechSynthesis.getVoices().length===0){window.speechSynthesis.addEventListener("voiceschanged",trySpeak,{once:true});}
-      else trySpeak();
-    },2600);
+      if(window.speechSynthesis.getVoices().length===0){window.speechSynthesis.onvoiceschanged=setVoice;}else setVoice();
+    }, 2600);
   }
 
   function playPowerUp(){
     const t=audioCtx.currentTime;
-    const thud=audioCtx.createOscillator(),tg=audioCtx.createGain();thud.connect(tg);tg.connect(audioCtx.destination);thud.type="sine";thud.frequency.setValueAtTime(80,t);thud.frequency.exponentialRampToValueAtTime(30,t+.12);tg.gain.setValueAtTime(.5,t);tg.gain.exponentialRampToValueAtTime(.001,t+.18);thud.start(t);thud.stop(t+.2);
-    const bs=audioCtx.sampleRate*.08,bb=audioCtx.createBuffer(1,bs,audioCtx.sampleRate),bd=bb.getChannelData(0);for(let i=0;i<bs;i++)bd[i]=(Math.random()*2-1)*(1-i/bs);
-    const ns=audioCtx.createBufferSource(),ng=audioCtx.createGain(),nf=audioCtx.createBiquadFilter();ns.buffer=bb;ns.connect(nf);nf.connect(ng);ng.connect(audioCtx.destination);nf.type="bandpass";nf.frequency.value=3000;nf.Q.value=.5;ng.gain.setValueAtTime(.3,t+.05);ns.start(t+.05);
-    const wh=audioCtx.createOscillator(),wg=audioCtx.createGain();wh.connect(wg);wg.connect(audioCtx.destination);wh.type="sawtooth";wh.frequency.setValueAtTime(80,t+.1);wh.frequency.exponentialRampToValueAtTime(1200,t+.7);wg.gain.setValueAtTime(0,t+.1);wg.gain.linearRampToValueAtTime(.12,t+.35);wg.gain.linearRampToValueAtTime(.08,t+.65);wg.gain.exponentialRampToValueAtTime(.001,t+.75);wh.start(t+.1);wh.stop(t+.8);
-    const hm=audioCtx.createOscillator(),hg=audioCtx.createGain();hm.connect(hg);hg.connect(audioCtx.destination);hm.type="sine";hm.frequency.value=120;hg.gain.setValueAtTime(0,t+.5);hg.gain.linearRampToValueAtTime(.15,t+.75);hg.gain.linearRampToValueAtTime(.06,t+1.1);hg.gain.exponentialRampToValueAtTime(.001,t+1.4);hm.start(t+.5);hm.stop(t+1.5);
+    const thud=audioCtx.createOscillator(),tg=audioCtx.createGain(); thud.connect(tg);tg.connect(audioCtx.destination);
+    thud.type="sine";thud.frequency.setValueAtTime(80,t);thud.frequency.exponentialRampToValueAtTime(30,t+.12);
+    tg.gain.setValueAtTime(.5,t);tg.gain.exponentialRampToValueAtTime(.001,t+.18);thud.start(t);thud.stop(t+.2);
+    const bs=audioCtx.sampleRate*.08,bb=audioCtx.createBuffer(1,bs,audioCtx.sampleRate),bd=bb.getChannelData(0);
+    for(let i=0;i<bs;i++)bd[i]=(Math.random()*2-1)*(1-i/bs);
+    const ns=audioCtx.createBufferSource(),ng=audioCtx.createGain(),nf=audioCtx.createBiquadFilter();
+    ns.buffer=bb;ns.connect(nf);nf.connect(ng);ng.connect(audioCtx.destination);
+    nf.type="bandpass";nf.frequency.value=3000;nf.Q.value=.5;ng.gain.setValueAtTime(.3,t+.05);ns.start(t+.05);
+    const wh=audioCtx.createOscillator(),wg=audioCtx.createGain();wh.connect(wg);wg.connect(audioCtx.destination);wh.type="sawtooth";
+    wh.frequency.setValueAtTime(80,t+.1);wh.frequency.exponentialRampToValueAtTime(1200,t+.7);
+    wg.gain.setValueAtTime(0,t+.1);wg.gain.linearRampToValueAtTime(.12,t+.35);wg.gain.linearRampToValueAtTime(.08,t+.65);wg.gain.exponentialRampToValueAtTime(.001,t+.75);
+    wh.start(t+.1);wh.stop(t+.8);
+    const hm=audioCtx.createOscillator(),hg=audioCtx.createGain();hm.connect(hg);hg.connect(audioCtx.destination);hm.type="sine";hm.frequency.value=120;
+    hg.gain.setValueAtTime(0,t+.5);hg.gain.linearRampToValueAtTime(.15,t+.75);hg.gain.linearRampToValueAtTime(.06,t+1.1);hg.gain.exponentialRampToValueAtTime(.001,t+1.4);hm.start(t+.5);hm.stop(t+1.5);
     [523,659,784,1047].forEach((f,i)=>{const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="sine";o.frequency.value=f;g.gain.setValueAtTime(0,t+.72+i*.025);g.gain.linearRampToValueAtTime(.1,t+.76+i*.025);g.gain.exponentialRampToValueAtTime(.001,t+1.4);o.start(t+.72+i*.025);o.stop(t+1.5);});
   }
 
   function playAccessDenied(){
     const t=audioCtx.currentTime;
-    const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="square";o.frequency.value=120;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.2,t+.02);g.gain.setValueAtTime(.2,t+.08);g.gain.setValueAtTime(0,t+.1);g.gain.setValueAtTime(.2,t+.15);g.gain.setValueAtTime(0,t+.17);g.gain.setValueAtTime(.2,t+.22);g.gain.exponentialRampToValueAtTime(.001,t+.38);o.start(t);o.stop(t+.4);
-    const al=audioCtx.createOscillator(),ag=audioCtx.createGain();al.connect(ag);ag.connect(audioCtx.destination);al.type="sine";al.frequency.setValueAtTime(880,t+.05);al.frequency.exponentialRampToValueAtTime(220,t+.5);ag.gain.setValueAtTime(.18,t+.05);ag.gain.exponentialRampToValueAtTime(.001,t+.55);al.start(t+.05);al.stop(t+.6);
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="square";o.frequency.value=120;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.2,t+.02);g.gain.setValueAtTime(.2,t+.08);g.gain.setValueAtTime(0,t+.1);g.gain.setValueAtTime(.2,t+.15);g.gain.setValueAtTime(0,t+.17);g.gain.setValueAtTime(.2,t+.22);g.gain.exponentialRampToValueAtTime(.001,t+.38);o.start(t);o.stop(t+.4);
+    const al=audioCtx.createOscillator(),ag=audioCtx.createGain();al.connect(ag);ag.connect(audioCtx.destination);al.type="sine";
+    al.frequency.setValueAtTime(880,t+.05);al.frequency.exponentialRampToValueAtTime(220,t+.5);ag.gain.setValueAtTime(.18,t+.05);ag.gain.exponentialRampToValueAtTime(.001,t+.55);al.start(t+.05);al.stop(t+.6);
   }
 
-  function playScanBeep(idx){const t=audioCtx.currentTime,pitches=[600,700,750,800,660];const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="square";o.frequency.value=pitches[idx%pitches.length];g.gain.setValueAtTime(.08,t);g.gain.exponentialRampToValueAtTime(.001,t+.06);o.start(t);o.stop(t+.08);}
-  function playDMSound(){const t=audioCtx.currentTime;[800,1000,1200].forEach((f,i)=>{const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="sine";o.frequency.value=f;g.gain.setValueAtTime(.1,t+i*.08);g.gain.exponentialRampToValueAtTime(.001,t+i*.08+.1);o.start(t+i*.08);o.stop(t+i*.08+.12);});}
-  function playExplosion(){const t=audioCtx.currentTime;const bs=audioCtx.sampleRate*.6,buf=audioCtx.createBuffer(1,bs,audioCtx.sampleRate),d=buf.getChannelData(0);for(let i=0;i<bs;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/bs,2);const ns=audioCtx.createBufferSource(),ng=audioCtx.createGain(),nf=audioCtx.createBiquadFilter();ns.buffer=buf;ns.connect(nf);nf.connect(ng);ng.connect(audioCtx.destination);nf.type="lowpass";nf.frequency.value=800;ng.gain.setValueAtTime(.8,t);ng.gain.exponentialRampToValueAtTime(.001,t+.6);ns.start(t);const bm=audioCtx.createOscillator(),bg=audioCtx.createGain();bm.connect(bg);bg.connect(audioCtx.destination);bm.type="sine";bm.frequency.setValueAtTime(120,t);bm.frequency.exponentialRampToValueAtTime(20,t+.4);bg.gain.setValueAtTime(.6,t);bg.gain.exponentialRampToValueAtTime(.001,t+.45);bm.start(t);bm.stop(t+.5);}
+  function playScanBeep(idx){
+    const t=audioCtx.currentTime,pitches=[600,700,750,800,660];
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="square";o.frequency.value=pitches[idx%pitches.length];
+    g.gain.setValueAtTime(.08,t);g.gain.exponentialRampToValueAtTime(.001,t+.06);o.start(t);o.stop(t+.08);
+  }
 
-  function explode(el){const r=el.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;const colors=["#ff4400","#ff8800","#ffcc00","#ff2200","#ffee00","#fff","#ff6600"];for(let i=0;i<32;i++){const p=document.createElement("div");const angle=(i/32)*Math.PI*2+(Math.random()-.5)*.4,speed=50+Math.random()*140,size=4+Math.random()*9;const color=colors[Math.floor(Math.random()*colors.length)],dx=Math.cos(angle)*speed,dy=Math.sin(angle)*speed;p.style.cssText=`position:fixed;left:${cx}px;top:${cy}px;width:${size}px;height:${size}px;background:${color};border-radius:${Math.random()>.5?"50%":"2px"};pointer-events:none;z-index:9999;transform:translate(-50%,-50%);transition:none;`;document.body.appendChild(p);requestAnimationFrame(()=>{p.style.transition="transform .7s ease-out,opacity .7s ease-out";p.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;p.style.opacity="0";});setTimeout(()=>p.remove(),750);}const fl=document.createElement("div");fl.style.cssText=`position:fixed;left:${cx}px;top:${cy}px;width:80px;height:80px;border-radius:50%;background:radial-gradient(circle,#fff 0%,#ffcc00 40%,transparent 70%);pointer-events:none;z-index:9998;transform:translate(-50%,-50%) scale(.3);opacity:1;transition:transform .35s ease-out,opacity .35s ease-out;`;document.body.appendChild(fl);requestAnimationFrame(()=>{fl.style.transform="translate(-50%,-50%) scale(2.5)";fl.style.opacity="0";});setTimeout(()=>fl.remove(),400);playExplosion();}
+  function playDMSound(){
+    const t=audioCtx.currentTime;
+    [800,1000,1200].forEach((f,i)=>{const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="sine";o.frequency.value=f;g.gain.setValueAtTime(.1,t+i*.08);g.gain.exponentialRampToValueAtTime(.001,t+i*.08+.1);o.start(t+i*.08);o.stop(t+i*.08+.12);});
+  }
+
+  function playExplosion(){
+    const t=audioCtx.currentTime;
+    const bs=audioCtx.sampleRate*.6,buf=audioCtx.createBuffer(1,bs,audioCtx.sampleRate),d=buf.getChannelData(0);
+    for(let i=0;i<bs;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/bs,2);
+    const ns=audioCtx.createBufferSource(),ng=audioCtx.createGain(),nf=audioCtx.createBiquadFilter();
+    ns.buffer=buf;ns.connect(nf);nf.connect(ng);ng.connect(audioCtx.destination);nf.type="lowpass";nf.frequency.value=800;ng.gain.setValueAtTime(.8,t);ng.gain.exponentialRampToValueAtTime(.001,t+.6);ns.start(t);
+    const bm=audioCtx.createOscillator(),bg=audioCtx.createGain();bm.connect(bg);bg.connect(audioCtx.destination);bm.type="sine";bm.frequency.setValueAtTime(120,t);bm.frequency.exponentialRampToValueAtTime(20,t+.4);bg.gain.setValueAtTime(.6,t);bg.gain.exponentialRampToValueAtTime(.001,t+.45);bm.start(t);bm.stop(t+.5);
+  }
+
+  function explode(el){
+    const r=el.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+    const colors=["#ff4400","#ff8800","#ffcc00","#ff2200","#ffee00","#fff","#ff6600"];
+    for(let i=0;i<32;i++){
+      const p=document.createElement("div");
+      const angle=(i/32)*Math.PI*2+(Math.random()-.5)*.4,speed=50+Math.random()*140,size=4+Math.random()*9;
+      const color=colors[Math.floor(Math.random()*colors.length)],dx=Math.cos(angle)*speed,dy=Math.sin(angle)*speed;
+      p.style.cssText=`position:fixed;left:${cx}px;top:${cy}px;width:${size}px;height:${size}px;background:${color};border-radius:${Math.random()>.5?"50%":"2px"};pointer-events:none;z-index:9999;transform:translate(-50%,-50%);transition:none;`;
+      document.body.appendChild(p);
+      requestAnimationFrame(()=>{p.style.transition="transform .7s ease-out,opacity .7s ease-out";p.style.transform=`translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px))`;p.style.opacity="0";});
+      setTimeout(()=>p.remove(),750);
+    }
+    const fl=document.createElement("div");
+    fl.style.cssText=`position:fixed;left:${cx}px;top:${cy}px;width:80px;height:80px;border-radius:50%;background:radial-gradient(circle,#fff 0%,#ffcc00 40%,transparent 70%);pointer-events:none;z-index:9998;transform:translate(-50%,-50%) scale(.3);opacity:1;transition:transform .35s ease-out,opacity .35s ease-out;`;
+    document.body.appendChild(fl);
+    requestAnimationFrame(()=>{fl.style.transform="translate(-50%,-50%) scale(2.5)";fl.style.opacity="0";});
+    setTimeout(()=>fl.remove(),400);
+    playExplosion();
+  }
 
   // ── Auth ──────────────────────────────────────────────────
   onAuthStateChanged(auth, async user => {
     currentUser = user;
     if (user) {
+      // Check if user has a profile
       const profileSnap = await getDoc(doc(usersRef, user.uid));
       if (!profileSnap.exists() || !profileSnap.data().username) {
-        document.getElementById("login-section").style.display="none";
-        document.getElementById("profile-setup").style.display="flex";
-        document.getElementById("username-input").value="";
-        updateAvatarPreview("");
+        // Show profile setup
+        document.getElementById("login-section").style.display = "none";
+        document.getElementById("profile-setup").style.display = "flex";
+        renderPresetAvatars();
       } else {
         myProfile = profileSnap.data();
         enterApp();
       }
     } else {
-      document.getElementById("login-section").style.display="flex";
-      document.getElementById("profile-setup").style.display="none";
-      document.getElementById("main-section").style.display="none";
+      document.getElementById("login-section").style.display = "flex";
+      document.getElementById("profile-setup").style.display = "none";
+      document.getElementById("main-section").style.display = "none";
     }
   });
 
-  function updateAvatarPreview(username) {
-    const preview = document.getElementById("avatar-preview");
-    const name = username || "?";
-    preview.innerHTML = makeInitialAvatar(name, 64);
+  function renderPresetAvatars() {
+    const grid = document.getElementById("preset-avatar-grid");
+    grid.innerHTML = "";
+    PRESET_AVATARS.forEach(emoji => {
+      const btn = document.createElement("button");
+      btn.className = "preset-avatar-btn";
+      btn.textContent = emoji;
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".preset-avatar-btn").forEach(b => b.classList.remove("selected"));
+        btn.classList.add("selected");
+        document.getElementById("avatar-preview").textContent = emoji;
+        document.getElementById("avatar-preview").dataset.type = "emoji";
+        document.getElementById("avatar-preview").dataset.value = emoji;
+      });
+      grid.appendChild(btn);
+    });
   }
 
-  document.getElementById("username-input").addEventListener("input", e => updateAvatarPreview(e.target.value));
+  // Upload avatar preview
+  document.getElementById("avatar-upload").addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const preview = document.getElementById("avatar-preview");
+      preview.innerHTML = `<img src="${ev.target.result}" style="width:64px;height:64px;border-radius:50%;object-fit:cover;">`;
+      preview.dataset.type = "url";
+      preview.dataset.value = ev.target.result;
+      document.querySelectorAll(".preset-avatar-btn").forEach(b => b.classList.remove("selected"));
+    };
+    reader.readAsDataURL(file);
+  });
 
   window.saveProfile = async function() {
     const username = document.getElementById("username-input").value.trim();
     if (!username) { shake(document.getElementById("username-input")); return; }
+    const preview = document.getElementById("avatar-preview");
+    const avatarType = preview.dataset.type || "emoji";
+    const avatarValue = preview.dataset.value || "👤";
     const btn = document.getElementById("save-profile-btn");
-    btn.disabled=true; btn.textContent="Lagrer...";
-    const color = getAvatarColor(username);
-    await setDoc(doc(usersRef, currentUser.uid), { uid:currentUser.uid, username, avatarColor:color, lastSeen:serverTimestamp() });
-    myProfile = { username, avatarColor:color };
-    document.getElementById("profile-setup").style.display="none";
+    btn.disabled = true; btn.textContent = "Lagrer...";
+    await setDoc(doc(usersRef, currentUser.uid), {
+      uid: currentUser.uid,
+      username,
+      avatar: avatarValue,
+      avatarType,
+      lastSeen: serverTimestamp()
+    });
+    myProfile = { username, avatar: avatarValue, avatarType };
+    document.getElementById("profile-setup").style.display = "none";
     enterApp();
   };
 
   async function enterApp() {
-    document.getElementById("main-section").style.display="block";
+    document.getElementById("main-section").style.display = "block";
     document.getElementById("user-info").textContent = myProfile.username;
     await loadMyData();
     updatePresence();
     presenceInterval = setInterval(updatePresence, 30000);
     document.getElementById("submit-btn").addEventListener("click", submitOutfit);
     document.getElementById("chat-send-btn").addEventListener("click", sendChatMessage);
-    document.getElementById("chat-input").addEventListener("keydown", e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChatMessage();}});
+    document.getElementById("chat-input").addEventListener("keydown", e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChatMessage();} });
     document.getElementById("dm-send-btn").addEventListener("click", sendDM);
-    document.getElementById("dm-input").addEventListener("keydown", e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendDM();}});
+    document.getElementById("dm-input").addEventListener("keydown", e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendDM();} });
   }
 
   async function updatePresence() {
-    if (!currentUser||!myProfile) return;
-    await setDoc(doc(usersRef, currentUser.uid), { lastSeen:serverTimestamp() }, { merge:true });
+    if (!currentUser || !myProfile) return;
+    await setDoc(doc(usersRef, currentUser.uid), { lastSeen: serverTimestamp() }, { merge: true });
   }
 
-  window.loginGoogle = async function(){try{await signInWithPopup(auth,new GoogleAuthProvider());}catch(e){alert("Feil: "+e.message);}};
-  window.logout = async function(){if(presenceInterval)clearInterval(presenceInterval);await signOut(auth);myOutfitId=null;myVoteId=null;myVotedForId=null;myProfile=null;};
+  window.loginGoogle = async function() { try { await signInWithPopup(auth, new GoogleAuthProvider()); } catch(e) { alert("Feil: "+e.message); } };
+  window.logout = async function() { if(presenceInterval)clearInterval(presenceInterval); await signOut(auth); myOutfitId=null;myVoteId=null;myVotedForId=null;myProfile=null; };
 
-  // ── Load my data ──────────────────────────────────────────
+  // ── Load my data ────────────────────────────────────────────
   async function loadMyData() {
-    const myOutfitSnap=await getDocs(query(outfitsRef,where("uid","==",currentUser.uid)));if(!myOutfitSnap.empty)myOutfitId=myOutfitSnap.docs[0].id;
-    const myVoteSnap=await getDocs(query(votesRef,where("uid","==",currentUser.uid)));if(!myVoteSnap.empty){myVoteId=myVoteSnap.docs[0].id;myVotedForId=myVoteSnap.docs[0].data().outfitId;}
+    const myOutfitSnap = await getDocs(query(outfitsRef, where("uid","==",currentUser.uid)));
+    if (!myOutfitSnap.empty) myOutfitId = myOutfitSnap.docs[0].id;
+    const myVoteSnap = await getDocs(query(votesRef, where("uid","==",currentUser.uid)));
+    if (!myVoteSnap.empty) { myVoteId=myVoteSnap.docs[0].id; myVotedForId=myVoteSnap.docs[0].data().outfitId; }
     renderForm();
   }
 
-  // ── Settings ──────────────────────────────────────────────
-  onSnapshot(settingsRef,snap=>{settings={locked:false,hideScores:false,countdown:null,chatEnabled:true,defaultCooldown:20,...(snap.exists()?snap.data():{})};applySettings();if(isAdmin)renderAdminControls();});
+  // ── Settings ────────────────────────────────────────────────
+  onSnapshot(settingsRef, snap => {
+    settings = { locked:false,hideScores:false,countdown:null,chatEnabled:true,defaultCooldown:20,...(snap.exists()?snap.data():{}) };
+    applySettings();
+    if(isAdmin) renderAdminControls();
+  });
 
-  function applySettings(){
-    document.getElementById("lock-banner").style.display=settings.locked?"block":"none";
-    const sb=document.getElementById("submit-btn");if(sb)sb.disabled=settings.locked;
-    const cir=document.getElementById("chat-input-row");if(cir)cir.style.display=settings.chatEnabled?"flex":"none";
+  function applySettings() {
+    document.getElementById("lock-banner").style.display = settings.locked?"block":"none";
+    const submitBtn=document.getElementById("submit-btn"); if(submitBtn) submitBtn.disabled=settings.locked;
+    const chatInputRow=document.getElementById("chat-input-row"); if(chatInputRow) chatInputRow.style.display=settings.chatEnabled?"flex":"none";
     document.getElementById("chat-disabled-msg").style.display=settings.chatEnabled?"none":"block";
     if(countdownInterval)clearInterval(countdownInterval);
     if(settings.countdown){updateCountdown();countdownInterval=setInterval(updateCountdown,1000);}
     else document.getElementById("countdown-bar").style.display="none";
   }
 
-  function updateCountdown(){const bar=document.getElementById("countdown-bar"),label=document.getElementById("countdown-label");if(!settings.countdown){bar.style.display="none";return;}const rem=settings.countdown-Date.now();if(rem<=0){bar.style.display="none";clearInterval(countdownInterval);return;}bar.style.display="block";const h=Math.floor(rem/3600000),m=Math.floor((rem%3600000)/60000),s=Math.floor((rem%60000)/1000);label.textContent=h>0?`${h}t ${m}m ${s}s igjen`:m>0?`${m}m ${s}s igjen`:`${s}s igjen`;}
+  function updateCountdown(){
+    const bar=document.getElementById("countdown-bar"),label=document.getElementById("countdown-label");
+    if(!settings.countdown){bar.style.display="none";return;}
+    const rem=settings.countdown-Date.now();
+    if(rem<=0){bar.style.display="none";clearInterval(countdownInterval);return;}
+    bar.style.display="block";
+    const h=Math.floor(rem/3600000),m=Math.floor((rem%3600000)/60000),s=Math.floor((rem%60000)/1000);
+    label.textContent=h>0?`${h}t ${m}m ${s}s igjen`:m>0?`${m}m ${s}s igjen`:`${s}s igjen`;
+  }
 
-  // ── Submit ────────────────────────────────────────────────
+  // ── Submit ──────────────────────────────────────────────────
   async function submitOutfit(){
     if(!currentUser||settings.locked){if(settings.locked)alert("Avstemningen er låst.");return;}
-    const di=document.getElementById("outfit-desc"),desc=di.value.trim();if(!desc){shake(di);return;}
+    const descInput=document.getElementById("outfit-desc"),desc=descInput.value.trim();
+    if(!desc){shake(descInput);return;}
     const btn=document.getElementById("submit-btn");btn.disabled=true;btn.textContent="Lagrer...";
-    try{if(myOutfitId){await updateDoc(doc(db,"outfits",myOutfitId),{description:desc,votes:0,updatedAt:serverTimestamp()});const vs=await getDocs(query(votesRef,where("outfitId","==",myOutfitId)));for(const v of vs.docs)await deleteDoc(v.ref);if(myVotedForId===myOutfitId){myVoteId=null;myVotedForId=null;}}else{const dr=await addDoc(outfitsRef,{uid:currentUser.uid,name:myProfile.username,avatarColor:myProfile.avatarColor,description:desc,votes:0,createdAt:serverTimestamp()});myOutfitId=dr.id;}renderForm();}catch(e){alert("Feil: "+e.message);}
+    try{
+      if(myOutfitId){
+        await updateDoc(doc(db,"outfits",myOutfitId),{description:desc,votes:0,updatedAt:serverTimestamp()});
+        const vs=await getDocs(query(votesRef,where("outfitId","==",myOutfitId)));
+        for(const v of vs.docs)await deleteDoc(v.ref);
+        if(myVotedForId===myOutfitId){myVoteId=null;myVotedForId=null;}
+      }else{
+        const dr=await addDoc(outfitsRef,{uid:currentUser.uid,name:myProfile.username,avatar:myProfile.avatar,avatarType:myProfile.avatarType,description:desc,votes:0,createdAt:serverTimestamp()});
+        myOutfitId=dr.id;
+      }
+      renderForm();
+    }catch(e){alert("Feil: "+e.message);}
     btn.disabled=settings.locked;btn.textContent=myOutfitId?"Lagre endringer":"Send inn forslag";
   }
 
-  function renderForm(){const di=document.getElementById("outfit-desc"),sb=document.getElementById("submit-btn"),fl=document.getElementById("form-main-label");if(!di||!sb||!fl)return;if(myOutfitId){const mine=allOutfits.find(o=>o.id===myOutfitId);if(mine)di.value=mine.description;sb.textContent="Lagre endringer";fl.textContent="Ditt forslag (rediger og lagre — stemmer nullstilles)";}else{if(!di.value)di.value="";sb.textContent="Send inn forslag";fl.textContent="Antrekkforslag";}sb.disabled=settings.locked;}
+  function renderForm(){
+    const descInput=document.getElementById("outfit-desc"),submitBtn=document.getElementById("submit-btn"),formLabel=document.getElementById("form-main-label");
+    if(!descInput||!submitBtn||!formLabel)return;
+    if(myOutfitId){const mine=allOutfits.find(o=>o.id===myOutfitId);if(mine)descInput.value=mine.description;submitBtn.textContent="Lagre endringer";formLabel.textContent="Ditt forslag (rediger og lagre — stemmer nullstilles)";}
+    else{if(!descInput.value)descInput.value="";submitBtn.textContent="Send inn forslag";formLabel.textContent="Antrekkforslag";}
+    submitBtn.disabled=settings.locked;
+  }
 
-  // ── Vote ──────────────────────────────────────────────────
-  async function voteForOutfit(outfitId){if(!currentUser)return;if(settings.locked){alert("Avstemningen er låst.");return;}if(outfitId===myOutfitId){alert("Du kan ikke stemme på ditt eget forslag.");return;}if(myVotedForId===outfitId){if(myVoteId)await deleteDoc(doc(db,"votes",myVoteId));await updateDoc(doc(db,"outfits",outfitId),{votes:increment(-1)});myVoteId=null;myVotedForId=null;}else{if(myVoteId){await deleteDoc(doc(db,"votes",myVoteId));if(myVotedForId)await updateDoc(doc(db,"outfits",myVotedForId),{votes:increment(-1)});}const vRef=await addDoc(votesRef,{uid:currentUser.uid,outfitId});await updateDoc(doc(db,"outfits",outfitId),{votes:increment(1)});myVoteId=vRef.id;myVotedForId=outfitId;}}
+  // ── Vote ────────────────────────────────────────────────────
+  async function voteForOutfit(outfitId){
+    if(!currentUser)return;
+    if(settings.locked){alert("Avstemningen er låst.");return;}
+    if(outfitId===myOutfitId){alert("Du kan ikke stemme på ditt eget forslag.");return;}
+    if(myVotedForId===outfitId){
+      if(myVoteId)await deleteDoc(doc(db,"votes",myVoteId));
+      await updateDoc(doc(db,"outfits",outfitId),{votes:increment(-1)});
+      myVoteId=null;myVotedForId=null;
+    }else{
+      if(myVoteId){await deleteDoc(doc(db,"votes",myVoteId));if(myVotedForId)await updateDoc(doc(db,"outfits",myVotedForId),{votes:increment(-1)});}
+      const vRef=await addDoc(votesRef,{uid:currentUser.uid,outfitId});
+      await updateDoc(doc(db,"outfits",outfitId),{votes:increment(1)});
+      myVoteId=vRef.id;myVotedForId=outfitId;
+    }
+  }
+
   document.getElementById("cards-container").addEventListener("click",e=>{const btn=e.target.closest(".vote-btn");if(btn)voteForOutfit(btn.dataset.id);});
 
-  // ── Chat ──────────────────────────────────────────────────
-  async function sendChatMessage(){if(!currentUser||!settings.chatEnabled)return;const input=document.getElementById("chat-input"),msg=input.value.trim();if(!msg)return;const now=Date.now();const cooldown=(settings.userCooldowns&&settings.userCooldowns[currentUser.uid])||settings.defaultCooldown||20;if(now-lastChatTime<cooldown*1000){alert(`Vent ${Math.ceil(cooldown-(now-lastChatTime)/1000)} sekunder.`);return;}lastChatTime=now;input.value="";startChatCooldown(cooldown);await addDoc(chatRef,{uid:currentUser.uid,name:myProfile.username,avatarColor:myProfile.avatarColor,isAdmin,message:msg,createdAt:serverTimestamp()});}
-  function startChatCooldown(cooldown){const btn=document.getElementById("chat-send-btn");if(chatCooldownInterval)clearInterval(chatCooldownInterval);let r=cooldown;btn.disabled=true;btn.textContent=`${r}s`;chatCooldownInterval=setInterval(()=>{r--;if(r<=0){clearInterval(chatCooldownInterval);btn.disabled=false;btn.textContent="Send";}else btn.textContent=`${r}s`;},1000);}
+  // ── Chat ────────────────────────────────────────────────────
+  async function sendChatMessage(){
+    if(!currentUser||!settings.chatEnabled)return;
+    const input=document.getElementById("chat-input"),msg=input.value.trim();if(!msg)return;
+    const now=Date.now();
+    const cooldown=(settings.userCooldowns&&settings.userCooldowns[currentUser.uid])||settings.defaultCooldown||20;
+    if(now-lastChatTime<cooldown*1000){alert(`Vent ${Math.ceil(cooldown-(now-lastChatTime)/1000)} sekunder.`);return;}
+    lastChatTime=now;input.value="";startChatCooldown(cooldown);
+    await addDoc(chatRef,{uid:currentUser.uid,name:myProfile.username,avatar:myProfile.avatar,avatarType:myProfile.avatarType,isAdmin:isAdmin,message:msg,createdAt:serverTimestamp()});
+  }
+
+  function startChatCooldown(cooldown){
+    const btn=document.getElementById("chat-send-btn");if(chatCooldownInterval)clearInterval(chatCooldownInterval);
+    let remaining=cooldown;btn.disabled=true;btn.textContent=`${remaining}s`;
+    chatCooldownInterval=setInterval(()=>{remaining--;if(remaining<=0){clearInterval(chatCooldownInterval);btn.disabled=false;btn.textContent="Send";}else btn.textContent=`${remaining}s`;},1000);
+  }
 
   onSnapshot(query(chatRef,orderBy("createdAt","asc")),snap=>{
     allChatMessages=snap.docs.map(d=>({id:d.id,...d.data()}));
     const container=document.getElementById("chat-messages");container.innerHTML="";
     allChatMessages.forEach(data=>{
       const div=document.createElement("div");div.className="chat-msg"+(data.isAdmin?" chat-msg-admin":"");div.dataset.id=data.id;
-      const av=makeInitialAvatar(data.name,22);
-      const badge=data.isAdmin?`<span class="chat-admin-badge">⬡</span>`:"";
-      div.innerHTML=`${av}<span class="chat-name${data.isAdmin?" chat-name-admin":""}">${badge}${escapeHtml(data.name)}</span><span class="chat-text">${escapeHtml(data.message)}</span>`;
+      const avatarHtml=data.avatarType==="url"?`<img src="${data.avatar}" class="chat-avatar-img">`:`<span class="chat-avatar-emoji">${data.avatar||"👤"}</span>`;
+      const badgeHtml=data.isAdmin?`<span class="chat-admin-badge">⬡</span>`:"";
+      div.innerHTML=`${avatarHtml}<span class="chat-name${data.isAdmin?" chat-name-admin":""}">${badgeHtml}${escapeHtml(data.name)}</span><span class="chat-text">${escapeHtml(data.message)}</span>`;
       container.appendChild(div);
     });
     container.scrollTop=container.scrollHeight;
@@ -228,19 +356,72 @@
 
   async function deleteChatMessage(id,el){explode(el);await new Promise(r=>setTimeout(r,350));el.style.opacity="0";await new Promise(r=>setTimeout(r,200));await deleteDoc(doc(db,"chat",id));}
 
-  // ── DMs ───────────────────────────────────────────────────
-  onSnapshot(query(dmsRef,orderBy("createdAt","asc")),snap=>{allDMs=snap.docs.map(d=>({id:d.id,...d.data()}));if(!currentUser)return;const unread=allDMs.filter(m=>m.receiverId===currentUser.uid&&!m.read).length;const badge=document.getElementById("dm-badge");badge.style.display=unread>0?"inline-flex":"none";badge.textContent=unread;if(activeDMUser)renderDMConversation();});
-  onSnapshot(query(usersRef,orderBy("lastSeen","desc")),snap=>{allUsers=snap.docs.map(d=>({id:d.id,...d.data()}));if(isAdmin){renderAdminUsers();renderAdminList();}});
+  // ── DMs ─────────────────────────────────────────────────────
+  onSnapshot(query(dmsRef,orderBy("createdAt","asc")),snap=>{
+    allDMs=snap.docs.map(d=>({id:d.id,...d.data()}));
+    if(!currentUser)return;
+    const myDMs=allDMs.filter(m=>m.participants&&m.participants.includes(currentUser.uid));
+    const unread=myDMs.filter(m=>m.receiverId===currentUser.uid&&!m.read).length;
+    const badge=document.getElementById("dm-badge");badge.style.display=unread>0?"inline-flex":"none";badge.textContent=unread;
+    if(activeDMUser)renderDMConversation();
+  });
+
+  onSnapshot(query(usersRef,orderBy("lastSeen","desc")),snap=>{
+    allUsers=snap.docs.map(d=>({id:d.id,...d.data()}));
+    if(isAdmin){renderAdminUsers();renderAdminList();}
+  });
 
   window.openDMs=function(){document.getElementById("dm-overlay").style.display="flex";document.getElementById("dm-user-list").style.display="block";document.getElementById("dm-conversation").style.display="none";activeDMUser=null;renderDMUserList();};
   window.closeDMs=function(){document.getElementById("dm-overlay").style.display="none";};
-  function renderDMUserList(){const list=document.getElementById("dm-user-list-inner");list.innerHTML="";const others=allUsers.filter(u=>u.uid!==currentUser?.uid);if(others.length===0){list.innerHTML='<div style="color:var(--muted);font-size:.88rem;text-align:center;padding:2rem">Ingen andre brukere ennå.</div>';return;}others.forEach(u=>{const hasUnread=allDMs.some(m=>m.receiverId===currentUser.uid&&m.senderId===u.uid&&!m.read);const div=document.createElement("div");div.className="dm-user-row";div.innerHTML=`${makeInitialAvatar(u.username,36)}<span class="dm-user-name">${escapeHtml(u.username)}</span>${hasUnread?'<span class="dm-unread-dot"></span>':""}`;div.addEventListener("click",()=>openDMConversation(u));list.appendChild(div);});}
-  async function openDMConversation(user){activeDMUser=user;document.getElementById("dm-user-list").style.display="none";document.getElementById("dm-conversation").style.display="flex";document.getElementById("dm-conv-title").textContent=user.username;const unreadMsgs=allDMs.filter(m=>m.receiverId===currentUser.uid&&m.senderId===user.uid&&!m.read);for(const m of unreadMsgs)await updateDoc(doc(db,"dms",m.id),{read:true});renderDMConversation();}
-  function renderDMConversation(){if(!activeDMUser||!currentUser)return;const container=document.getElementById("dm-messages");container.innerHTML="";const conv=allDMs.filter(m=>m.participants&&m.participants.includes(currentUser.uid)&&m.participants.includes(activeDMUser.uid));if(conv.length===0){container.innerHTML='<div style="color:var(--muted);font-size:.84rem;text-align:center;padding:2rem">Ingen meldinger ennå.</div>';return;}conv.forEach(m=>{const isMe=m.senderId===currentUser.uid;const div=document.createElement("div");div.className="dm-msg"+(isMe?" dm-msg-me":"");div.innerHTML=`<span class="dm-msg-text">${escapeHtml(m.message)}</span>`;container.appendChild(div);});container.scrollTop=container.scrollHeight;}
-  async function sendDM(){if(!currentUser||!activeDMUser)return;const input=document.getElementById("dm-input"),msg=input.value.trim();if(!msg)return;input.value="";await addDoc(dmsRef,{participants:[currentUser.uid,activeDMUser.uid],senderId:currentUser.uid,senderName:myProfile.username,receiverId:activeDMUser.uid,message:msg,read:false,createdAt:serverTimestamp()});playDMSound();}
+
+  function renderDMUserList(){
+    const list=document.getElementById("dm-user-list-inner");list.innerHTML="";
+    const others=allUsers.filter(u=>u.uid!==currentUser?.uid);
+    if(others.length===0){list.innerHTML='<div style="color:var(--muted);font-size:.88rem;text-align:center;padding:2rem">Ingen andre brukere ennå.</div>';return;}
+    others.forEach(u=>{
+      const hasUnread=allDMs.some(m=>m.receiverId===currentUser.uid&&m.senderId===u.uid&&!m.read);
+      const div=document.createElement("div");div.className="dm-user-row";
+      const av=u.avatarType==="url"?`<img src="${u.avatar}" class="dm-avatar-img">`:`<span class="dm-avatar-emoji">${u.avatar||"👤"}</span>`;
+      div.innerHTML=`${av}<span class="dm-user-name">${escapeHtml(u.username||u.name)}</span>${hasUnread?'<span class="dm-unread-dot"></span>':""}`;
+      div.addEventListener("click",()=>openDMConversation(u));
+      list.appendChild(div);
+    });
+  }
+
+  async function openDMConversation(user){
+    activeDMUser=user;
+    document.getElementById("dm-user-list").style.display="none";document.getElementById("dm-conversation").style.display="flex";
+    document.getElementById("dm-conv-title").textContent=user.username||user.name;
+    const unreadMsgs=allDMs.filter(m=>m.receiverId===currentUser.uid&&m.senderId===user.uid&&!m.read);
+    for(const m of unreadMsgs)await updateDoc(doc(db,"dms",m.id),{read:true});
+    renderDMConversation();
+  }
+
+  function renderDMConversation(){
+    if(!activeDMUser||!currentUser)return;
+    const container=document.getElementById("dm-messages");container.innerHTML="";
+    const conv=allDMs.filter(m=>m.participants&&m.participants.includes(currentUser.uid)&&m.participants.includes(activeDMUser.uid));
+    if(conv.length===0){container.innerHTML='<div style="color:var(--muted);font-size:.84rem;text-align:center;padding:2rem">Ingen meldinger ennå.</div>';return;}
+    conv.forEach(m=>{
+      const isMe=m.senderId===currentUser.uid;
+      const div=document.createElement("div");div.className="dm-msg"+(isMe?" dm-msg-me":"");
+      div.innerHTML=`<span class="dm-msg-text">${escapeHtml(m.message)}</span>`;
+      container.appendChild(div);
+    });
+    container.scrollTop=container.scrollHeight;
+  }
+
+  async function sendDM(){
+    if(!currentUser||!activeDMUser)return;
+    const input=document.getElementById("dm-input"),msg=input.value.trim();if(!msg)return;
+    input.value="";
+    await addDoc(dmsRef,{participants:[currentUser.uid,activeDMUser.uid],senderId:currentUser.uid,senderName:myProfile.username,receiverId:activeDMUser.uid,message:msg,read:false,createdAt:serverTimestamp()});
+    playDMSound();
+  }
+
   window.backToDMList=function(){activeDMUser=null;document.getElementById("dm-user-list").style.display="block";document.getElementById("dm-conversation").style.display="none";renderDMUserList();};
 
-  // ── Outfits ───────────────────────────────────────────────
+  // ── Outfits ─────────────────────────────────────────────────
   onSnapshot(query(outfitsRef,orderBy("votes","desc")),snap=>{
     allOutfits=snap.docs.map(d=>({id:d.id,...d.data()}));
     if(myOutfitId&&!allOutfits.find(o=>o.id===myOutfitId))myOutfitId=null;
@@ -248,25 +429,48 @@
     const totalVotes=allOutfits.reduce((s,o)=>s+(o.votes||0),0);
     const counterEl=document.getElementById("vote-counter");if(counterEl)counterEl.textContent=`${totalVotes} stemme${totalVotes!==1?"r":""} totalt`;
     if(snap.empty){container.innerHTML="";empty.style.display="block";}
-    else{empty.style.display="none";container.innerHTML="";let rank=1;allOutfits.forEach(data=>{const id=data.id,isVoted=myVotedForId===id,isOwn=myOutfitId===id;const vd=settings.hideScores&&!isAdmin?"?":data.votes;const card=document.createElement("div");card.className="card"+(rank===1&&data.votes>0?" leading":"")+(isOwn?" own":"");card.innerHTML=`<div class="card-rank">#${rank}</div><div class="card-content"><div class="card-desc">${escapeHtml(data.description)}</div><div class="card-meta">${isOwn?'<span class="own-tag">Ditt forslag</span>':`foreslått av <span>${escapeHtml(data.name)}</span>`}</div></div>${!isOwn?`<button class="vote-btn ${isVoted?"voted":""}" data-id="${id}">${isVoted?"✓ Stemt":"Stem"}<span class="vote-count">${vd}</span></button>`:`<span class="vote-count-own">${vd} stemmer</span>`}`;container.appendChild(card);rank++;});}
-    renderForm();if(isAdmin){renderAdminList();renderAdminControls();}
+    else{
+      empty.style.display="none";container.innerHTML="";let rank=1;
+      allOutfits.forEach(data=>{
+        const id=data.id,isVoted=myVotedForId===id,isOwn=myOutfitId===id;
+        const votesDisplay=settings.hideScores&&!isAdmin?"?":data.votes;
+        const card=document.createElement("div");card.className="card"+(rank===1&&data.votes>0?" leading":"")+(isOwn?" own":"");
+        card.innerHTML=`<div class="card-rank">#${rank}</div><div class="card-content"><div class="card-desc">${escapeHtml(data.description)}</div><div class="card-meta">${isOwn?'<span class="own-tag">Ditt forslag</span>':`foreslått av <span>${escapeHtml(data.name)}</span>`}</div></div>${!isOwn?`<button class="vote-btn ${isVoted?"voted":""}" data-id="${id}">${isVoted?"✓ Stemt":"Stem"}<span class="vote-count">${votesDisplay}</span></button>`:`<span class="vote-count-own">${votesDisplay} stemmer</span>`}`;
+        container.appendChild(card);rank++;
+      });
+    }
+    renderForm();
+    if(isAdmin){renderAdminList();renderAdminControls();}
   });
 
-  // ── Admin ─────────────────────────────────────────────────
+  // ── Admin ───────────────────────────────────────────────────
   window.openAdmin=function(){
     audioCtx.resume();
-    const t0=audioCtx.currentTime,io=audioCtx.createOscillator(),ig=audioCtx.createGain();io.connect(ig);ig.connect(audioCtx.destination);io.type="sine";io.frequency.setValueAtTime(200,t0);io.frequency.linearRampToValueAtTime(600,t0+.3);ig.gain.setValueAtTime(.15,t0);ig.gain.exponentialRampToValueAtTime(.001,t0+.35);io.start(t0);io.stop(t0+.4);
+    const t0=audioCtx.currentTime,io=audioCtx.createOscillator(),ig=audioCtx.createGain();
+    io.connect(ig);ig.connect(audioCtx.destination);io.type="sine";io.frequency.setValueAtTime(200,t0);io.frequency.linearRampToValueAtTime(600,t0+.3);ig.gain.setValueAtTime(.15,t0);ig.gain.exponentialRampToValueAtTime(.001,t0+.35);io.start(t0);io.stop(t0+.4);
     const so=document.getElementById("scan-overlay"),st=document.getElementById("scan-text");so.style.display="flex";
     const msgs=["// INITIALISERER...","// KOBLER TIL JARVIS...","// VERIFISERER IDENTITET...","// LASTER BRUKERDATA...","// TILGANG KLAR"];
     let idx=0;st.textContent=msgs[0];
     const iv=setInterval(()=>{idx++;if(idx<msgs.length){st.textContent=msgs[idx];playScanBeep(idx);}else{clearInterval(iv);setTimeout(()=>{so.style.display="none";document.getElementById("admin-overlay").style.display="flex";document.getElementById("admin-pass-input").value="";document.getElementById("admin-error").style.display="none";document.getElementById("admin-panel-content").style.display="none";document.getElementById("admin-login-box").style.display="block";document.getElementById("admin-scanning").style.display="none";document.getElementById("admin-pass-box").style.display="flex";document.getElementById("admin-pass-input").focus();playPowerUp();},300);}},380);
   };
+
   window.closeAdmin=function(){document.getElementById("admin-overlay").style.display="none";isAdmin=false;};
+
   window.adminLogin=function(){
     const pass=document.getElementById("admin-pass-input").value;
-    if(pass===ADMIN_PASSWORD){isAdmin=true;document.getElementById("admin-login-box").style.display="none";document.getElementById("admin-panel-content").style.display="block";renderAdminControls();renderAdminList();renderAdminUsers();playJarvisWelcome();}
-    else{playAccessDenied();const e=document.getElementById("admin-error");e.style.display="block";e.classList.remove("blink");void e.offsetWidth;e.classList.add("blink");shake(document.getElementById("admin-pass-input"));}
+    if(pass===ADMIN_PASSWORD){
+      isAdmin=true;
+      document.getElementById("admin-login-box").style.display="none";
+      document.getElementById("admin-panel-content").style.display="block";
+      renderAdminControls();renderAdminList();renderAdminUsers();
+      playJarvisWelcome();
+    }else{
+      playAccessDenied();
+      const e=document.getElementById("admin-error");e.style.display="block";e.classList.remove("blink");void e.offsetWidth;e.classList.add("blink");
+      shake(document.getElementById("admin-pass-input"));
+    }
   };
+
   document.getElementById("admin-pass-input").addEventListener("keydown",e=>{if(e.key==="Enter")window.adminLogin();});
 
   function renderAdminControls(){
@@ -286,19 +490,39 @@
     const cb=document.getElementById("countdown-clear-btn");if(cb)cb.addEventListener("click",async()=>await setDoc(settingsRef,{...settings,countdown:null},{merge:true}));
   }
 
-  async function adminDeleteOutfit(id,rowEl){explode(rowEl);await new Promise(r=>setTimeout(r,350));rowEl.style.opacity="0";await new Promise(r=>setTimeout(r,200));const vs=await getDocs(query(votesRef,where("outfitId","==",id)));for(const v of vs.docs)await deleteDoc(v.ref);await deleteDoc(doc(db,"outfits",id));renderAdminList();}
+  async function adminDeleteOutfit(id,rowEl){
+    explode(rowEl);await new Promise(r=>setTimeout(r,350));rowEl.style.opacity="0";await new Promise(r=>setTimeout(r,200));
+    const vs=await getDocs(query(votesRef,where("outfitId","==",id)));for(const v of vs.docs)await deleteDoc(v.ref);
+    await deleteDoc(doc(db,"outfits",id));renderAdminList();
+  }
 
   function renderAdminList(){
     const list=document.getElementById("admin-list");
     const totalVotes=allOutfits.reduce((s,o)=>s+(o.votes||0),0);
     document.getElementById("admin-stats").innerHTML=`STATUS: <span>ONLINE</span> · FORSLAG: <span>${allOutfits.length}</span> · STEMMER: <span>${totalVotes}</span>`;
     list.innerHTML=`<div class='ts-label' style='margin-bottom:.5rem'>FORSLAG</div>`;
-    if(allOutfits.length===0)list.innerHTML+='<div class="admin-empty">// INGEN FORSLAG</div>';
-    else allOutfits.forEach(o=>{const row=document.createElement("div");row.className="admin-row";row.innerHTML=`<div class="admin-row-info"><div class="admin-row-desc">${escapeHtml(o.description)}</div><div class="admin-row-meta">${escapeHtml(o.name)} · ${o.votes} stemmer</div></div><button class="admin-delete-btn">SLETT</button>`;row.querySelector(".admin-delete-btn").addEventListener("click",()=>adminDeleteOutfit(o.id,row));list.appendChild(row);});
+    if(allOutfits.length===0){list.innerHTML+='<div class="admin-empty">// INGEN FORSLAG</div>';}
+    else allOutfits.forEach(o=>{
+      const row=document.createElement("div");row.className="admin-row";
+      row.innerHTML=`<div class="admin-row-info"><div class="admin-row-desc">${escapeHtml(o.description)}</div><div class="admin-row-meta">${escapeHtml(o.name)} · ${o.votes} stemmer</div></div><button class="admin-delete-btn">SLETT</button>`;
+      row.querySelector(".admin-delete-btn").addEventListener("click",()=>adminDeleteOutfit(o.id,row));
+      list.appendChild(row);
+    });
     renderAdminChatList();
   }
 
-  function renderAdminChatList(){let cs=document.getElementById("admin-chat-section");if(!cs){cs=document.createElement("div");cs.id="admin-chat-section";document.getElementById("admin-list").after(cs);}cs.innerHTML=`<div class='ts-label' style='margin:1rem 0 .5rem'>CHAT-MELDINGER</div>`;if(allChatMessages.length===0){cs.innerHTML+='<div class="admin-empty">// INGEN MELDINGER</div>';return;}allChatMessages.forEach(data=>{const row=document.createElement("div");row.className="admin-row";row.innerHTML=`<div class="admin-row-info"><div class="admin-row-desc">${escapeHtml(data.message)}</div><div class="admin-row-meta">${escapeHtml(data.name)}</div></div><button class="admin-delete-btn">SLETT</button>`;row.querySelector(".admin-delete-btn").addEventListener("click",()=>deleteChatMessage(data.id,row));cs.appendChild(row);});}
+  function renderAdminChatList(){
+    let cs=document.getElementById("admin-chat-section");
+    if(!cs){cs=document.createElement("div");cs.id="admin-chat-section";document.getElementById("admin-list").after(cs);}
+    cs.innerHTML=`<div class='ts-label' style='margin:1rem 0 .5rem'>CHAT-MELDINGER</div>`;
+    if(allChatMessages.length===0){cs.innerHTML+='<div class="admin-empty">// INGEN MELDINGER</div>';return;}
+    allChatMessages.forEach(data=>{
+      const row=document.createElement("div");row.className="admin-row";
+      row.innerHTML=`<div class="admin-row-info"><div class="admin-row-desc">${escapeHtml(data.message)}</div><div class="admin-row-meta">${escapeHtml(data.name)}</div></div><button class="admin-delete-btn">SLETT</button>`;
+      row.querySelector(".admin-delete-btn").addEventListener("click",()=>deleteChatMessage(data.id,row));
+      cs.appendChild(row);
+    });
+  }
 
   function renderAdminUsers(){
     let us=document.getElementById("admin-users-section");
@@ -309,17 +533,18 @@
     if(active.length===0){us.innerHTML+='<div class="admin-empty">// INGEN AKTIVE</div>';return;}
     active.forEach(u=>{
       const userCooldown=(settings.userCooldowns&&settings.userCooldowns[u.uid])||settings.defaultCooldown||20;
+      const av=u.avatarType==="url"?`<img src="${u.avatar}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;">`:`<span style="font-size:1.3rem">${u.avatar||"👤"}</span>`;
       const row=document.createElement("div");row.className="admin-row";
       row.innerHTML=`
         <div style="display:flex;align-items:center;gap:.6rem;flex:1;min-width:0">
-          ${makeInitialAvatar(u.username,28)}
+          ${av}
           <div class="admin-row-info">
-            <div class="admin-row-desc">${escapeHtml(u.username)}</div>
+            <div class="admin-row-desc">${escapeHtml(u.username||u.name)}</div>
             <div class="admin-row-meta">Cooldown: ${userCooldown}s</div>
           </div>
         </div>
         <div style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
-          <input type="text" class="user-edit-name" value="${escapeHtml(u.username)}" placeholder="Nytt navn" style="width:90px;background:var(--ts-panel);border:1px solid var(--ts-border);color:var(--ts-accent);font-family:'Share Tech Mono',monospace;font-size:.68rem;padding:.25rem .4rem;border-radius:2px;outline:none;">
+          <input type="text" class="user-edit-name" value="${escapeHtml(u.username||u.name)}" placeholder="Brukernavn" style="width:90px;background:var(--ts-panel);border:1px solid var(--ts-border);color:var(--ts-accent);font-family:'Share Tech Mono',monospace;font-size:.68rem;padding:.25rem .4rem;border-radius:2px;outline:none;">
           <input type="number" class="user-cooldown-input" value="${userCooldown}" min="0" max="3600" style="width:55px;background:var(--ts-panel);border:1px solid var(--ts-border);color:var(--ts-accent);font-family:'Share Tech Mono',monospace;font-size:.68rem;padding:.25rem .4rem;border-radius:2px;outline:none;">
           <button class="admin-delete-btn" style="border-color:var(--ts-ok);color:var(--ts-ok)">SETT</button>
         </div>
@@ -327,137 +552,13 @@
       row.querySelector(".admin-delete-btn").addEventListener("click",async()=>{
         const newName=row.querySelector(".user-edit-name").value.trim();
         const val=parseInt(row.querySelector(".user-cooldown-input").value);
-        if(newName){const newColor=getAvatarColor(newName);await setDoc(doc(usersRef,u.uid),{username:newName,avatarColor:newColor},{merge:true});}
+        const updates={};
+        if(newName)updates.username=newName;
         if(!isNaN(val)&&val>=0){const uc={...(settings.userCooldowns||{}),[u.uid]:val};await setDoc(settingsRef,{...settings,userCooldowns:uc},{merge:true});}
+        if(newName)await setDoc(doc(usersRef,u.uid),{username:newName},{merge:true});
       });
       us.appendChild(row);
     });
-  }
-
-  // ── Easter egg: Space Invaders ────────────────────────────
-  let creditClickCount=0, creditClickTimer=null;
-  window.creditClick=function(){
-    creditClickCount++;
-    if(creditClickTimer)clearTimeout(creditClickTimer);
-    creditClickTimer=setTimeout(()=>creditClickCount=0,2000);
-    if(creditClickCount>=5){creditClickCount=0;openGame();}
-  };
-
-  let gameRunning=false,gameLoop=null;
-  function openGame(){
-    audioCtx.resume();
-    document.getElementById("game-overlay").style.display="flex";
-    startGame();
-  }
-  window.closeGame=function(){document.getElementById("game-overlay").style.display="none";gameRunning=false;if(gameLoop)cancelAnimationFrame(gameLoop);};
-
-  function startGame(){
-    const canvas=document.getElementById("game-canvas");
-    const ctx=canvas.getContext("2d");
-    const W=canvas.width=Math.min(560,window.innerWidth-40);
-    const H=canvas.height=380;
-    gameRunning=true;
-
-    // Player
-    let player={x:W/2,y:H-40,w:36,h:16,speed:5,bullets:[],cooldown:0};
-    // Enemies grid
-    let enemies=[];const cols=8,rows=3;const ex0=40,ey0=40,egx=Math.floor((W-80)/cols),egy=36;
-    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)enemies.push({x:ex0+c*egx,y:ey0+r*egy,w:24,h:16,alive:true,row:r});
-    let enemyDir=1,enemySpeed=0.4,enemyBullets=[],enemyShootTimer=0;
-    let score=0,lives=3,gameOver=false,won=false;
-    let keys={};
-
-    function playShoot(){const t=audioCtx.currentTime;const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="square";o.frequency.setValueAtTime(880,t);o.frequency.exponentialRampToValueAtTime(220,t+.15);g.gain.setValueAtTime(.08,t);g.gain.exponentialRampToValueAtTime(.001,t+.18);o.start(t);o.stop(t+.2);}
-    function playHit(){const t=audioCtx.currentTime;const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type="sawtooth";o.frequency.setValueAtTime(400,t);o.frequency.exponentialRampToValueAtTime(50,t+.2);g.gain.setValueAtTime(.12,t);g.gain.exponentialRampToValueAtTime(.001,t+.25);o.start(t);o.stop(t+.28);}
-
-    document.addEventListener("keydown",e=>keys[e.key]=true);
-    document.addEventListener("keyup",e=>keys[e.key]=false);
-
-    // Touch controls
-    let touchX=null;
-    canvas.addEventListener("touchstart",e=>{touchX=e.touches[0].clientX;e.preventDefault();},{passive:false});
-    canvas.addEventListener("touchmove",e=>{const dx=e.touches[0].clientX-touchX;player.x=Math.max(0,Math.min(W-player.w,player.x+dx));touchX=e.touches[0].clientX;e.preventDefault();},{passive:false});
-    canvas.addEventListener("touchend",e=>{if(player.cooldown<=0){player.bullets.push({x:player.x+player.w/2,y:player.y,speed:8});player.cooldown=15;playShoot();}e.preventDefault();},{passive:false});
-
-    function drawInvader(cx,cy,r){
-      ctx.fillStyle=r===0?"#ff4444":r===1?"#ff9900":"#00cfff";
-      // Body
-      ctx.fillRect(cx-8,cy-4,16,8);
-      ctx.fillRect(cx-6,cy-8,12,4);
-      ctx.fillRect(cx-10,cy,4,4);ctx.fillRect(cx+6,cy,4,4);
-      ctx.fillRect(cx-12,cy-2,4,4);ctx.fillRect(cx+8,cy-2,4,4);
-      // Eyes
-      ctx.fillStyle="#000";ctx.fillRect(cx-5,cy-3,3,3);ctx.fillRect(cx+2,cy-3,3,3);
-    }
-
-    function drawPlayer(px,py){
-      ctx.fillStyle="#00cfff";
-      // Iron Man repulsor shape
-      ctx.fillRect(px+12,py,12,4);ctx.fillRect(px+8,py+4,20,4);ctx.fillRect(px,py+8,36,4);ctx.fillRect(px+4,py+12,28,4);
-      // Repulsor glow
-      ctx.fillStyle="#fff";ctx.fillRect(px+15,py+2,6,2);
-    }
-
-    function update(){
-      if(!gameRunning||gameOver||won)return;
-      if(keys["ArrowLeft"]||keys["a"])player.x=Math.max(0,player.x-player.speed);
-      if(keys["ArrowRight"]||keys["d"])player.x=Math.min(W-player.w,player.x+player.speed);
-      if((keys[" "]||keys["ArrowUp"])&&player.cooldown<=0){player.bullets.push({x:player.x+player.w/2,y:player.y,speed:8});player.cooldown=15;playShoot();}
-      if(player.cooldown>0)player.cooldown--;
-      player.bullets=player.bullets.filter(b=>{b.y-=b.speed;return b.y>0;});
-
-      // Move enemies
-      let hitWall=false;
-      const alive=enemies.filter(e=>e.alive);
-      if(alive.length===0){won=true;return;}
-      alive.forEach(e=>{e.x+=enemyDir*enemySpeed;if(e.x<10||e.x>W-30)hitWall=true;});
-      if(hitWall){enemyDir*=-1;alive.forEach(e=>e.y+=12);enemySpeed=Math.min(enemySpeed+0.05,3);}
-
-      // Enemy shoot
-      enemyShootTimer--;
-      if(enemyShootTimer<=0){const shooters=alive.filter(e=>!alive.some(o=>o.alive&&o.x===e.x&&o.y>e.y));if(shooters.length>0){const shooter=shooters[Math.floor(Math.random()*shooters.length)];enemyBullets.push({x:shooter.x+12,y:shooter.y+16,speed:4});}enemyShootTimer=Math.max(20,60-score);}
-      enemyBullets=enemyBullets.filter(b=>{b.y+=b.speed;return b.y<H;});
-
-      // Collisions — player bullets hit enemies
-      player.bullets=player.bullets.filter(b=>{let hit=false;enemies.forEach(e=>{if(e.alive&&b.x>e.x&&b.x<e.x+24&&b.y>e.y&&b.y<e.y+16){e.alive=false;hit=true;score+=10;playHit();}});return!hit;});
-
-      // Enemy bullets hit player
-      enemyBullets=enemyBullets.filter(b=>{if(b.x>player.x&&b.x<player.x+player.w&&b.y>player.y&&b.y<player.y+player.h){lives--;playHit();if(lives<=0)gameOver=true;return false;}return true;});
-
-      // Enemies reach player
-      if(alive.some(e=>e.y+16>=player.y))gameOver=true;
-    }
-
-    function draw(){
-      ctx.fillStyle="#090e14";ctx.fillRect(0,0,W,H);
-      // Scanline effect
-      for(let y=0;y<H;y+=4){ctx.fillStyle="rgba(0,0,0,0.15)";ctx.fillRect(0,y,W,2);}
-      // Grid lines
-      ctx.strokeStyle="rgba(0,207,255,0.05)";ctx.lineWidth=1;
-      for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-      for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-
-      // Enemies
-      enemies.forEach(e=>{if(e.alive)drawInvader(e.x+12,e.y+8,e.row);});
-      // Player
-      drawPlayer(player.x,player.y);
-      // Player bullets
-      ctx.fillStyle="#00cfff";player.bullets.forEach(b=>{ctx.fillRect(b.x-2,b.y,4,10);});
-      // Enemy bullets
-      ctx.fillStyle="#ff4444";enemyBullets.forEach(b=>{ctx.fillRect(b.x-2,b.y,4,10);});
-
-      // HUD
-      ctx.font=`bold 13px 'Share Tech Mono'`;ctx.fillStyle="#00cfff";ctx.fillText(`SCORE: ${score}`,10,20);
-      ctx.fillStyle="#ff4444";ctx.fillText(`LIVES: ${"♥".repeat(lives)}`,W-100,20);
-
-      if(gameOver){ctx.fillStyle="rgba(0,0,0,.7)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#ff4444";ctx.font=`bold 28px 'Share Tech Mono'`;ctx.textAlign="center";ctx.fillText("SYSTEM FAILURE",W/2,H/2-20);ctx.fillStyle="#00cfff";ctx.font=`14px 'Share Tech Mono'`;ctx.fillText(`SCORE: ${score}`,W/2,H/2+15);ctx.fillText("TRYKK R FOR Å STARTE IGJEN",W/2,H/2+40);ctx.textAlign="left";}
-      if(won){ctx.fillStyle="rgba(0,0,0,.7)";ctx.fillRect(0,0,W,H);ctx.fillStyle="#00ff88";ctx.font=`bold 24px 'Share Tech Mono'`;ctx.textAlign="center";ctx.fillText("MISSION COMPLETE",W/2,H/2-20);ctx.fillStyle="#00cfff";ctx.font=`14px 'Share Tech Mono'`;ctx.fillText(`FINAL SCORE: ${score}`,W/2,H/2+15);ctx.fillText("TRYKK R FOR Å SPILLE IGJEN",W/2,H/2+40);ctx.textAlign="left";}
-    }
-
-    document.addEventListener("keydown",e=>{if(e.key==="r"||e.key==="R"){if(gameOver||won){gameRunning=false;cancelAnimationFrame(gameLoop);startGame();}}});
-
-    function loop(){if(!gameRunning)return;update();draw();gameLoop=requestAnimationFrame(loop);}
-    loop();
   }
 
   function escapeHtml(s){if(!s)return"";return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
@@ -469,6 +570,7 @@
   *{box-sizing:border-box;margin:0;padding:0;}
   body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:0 1rem 5rem;}
 
+  /* Login */
   #login-section{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:1.5rem;text-align:center;padding:2rem;}
   #login-section h1{font-family:'Fraunces',serif;font-size:clamp(2rem,6vw,3.2rem);font-weight:900;}
   #login-section p{color:var(--muted);font-size:.95rem;}
@@ -480,14 +582,20 @@
   #profile-setup{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:1.5rem;padding:2rem;text-align:center;}
   #profile-setup h2{font-family:'Fraunces',serif;font-size:clamp(1.8rem,5vw,2.8rem);font-weight:900;}
   #profile-setup p{color:var(--muted);font-size:.9rem;}
-  .setup-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:2rem;width:100%;max-width:400px;display:flex;flex-direction:column;gap:1.25rem;text-align:left;}
+  .setup-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:2rem;width:100%;max-width:440px;display:flex;flex-direction:column;gap:1.25rem;text-align:left;}
   .setup-label{font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:.35rem;display:block;}
   .setup-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:.95rem;padding:.75rem 1rem;outline:none;transition:border-color .2s;}
   .setup-input:focus{border-color:var(--accent);}
-  #avatar-preview{display:flex;align-items:center;gap:1rem;margin-bottom:.5rem;}
+  #avatar-preview{width:72px;height:72px;border-radius:50%;background:var(--bg);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:2.2rem;margin-bottom:.5rem;overflow:hidden;}
+  .preset-avatar-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:.4rem;}
+  .preset-avatar-btn{background:var(--bg);border:2px solid var(--border);border-radius:8px;font-size:1.4rem;padding:.35rem;cursor:pointer;transition:all .15s;line-height:1;}
+  .preset-avatar-btn:hover{border-color:var(--accent);}
+  .preset-avatar-btn.selected{border-color:var(--accent);background:var(--accent-light);}
+  .upload-label{display:inline-block;font-size:.78rem;color:var(--accent);cursor:pointer;text-decoration:underline;}
   #save-profile-btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:.95rem;font-weight:500;padding:.85rem;cursor:pointer;transition:opacity .2s;}
   #save-profile-btn:hover{opacity:.88;}#save-profile-btn:disabled{opacity:.45;cursor:not-allowed;}
 
+  /* Main */
   #main-section{display:none;}
   .container{max-width:620px;margin:0 auto;}
   header{text-align:center;padding:3rem 0 2.5rem;}
@@ -536,30 +644,36 @@
   .vote-count-own{flex-shrink:0;font-size:.78rem;color:var(--muted);white-space:nowrap;}
   #empty-state{text-align:center;padding:3rem 1rem;color:var(--muted);display:none;font-size:.88rem;}
 
+  /* Chat */
   .chat-section{margin-top:2.5rem;}
   .chat-box{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden;}
   #chat-messages{height:200px;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:.5rem;}
-  .chat-msg{display:flex;align-items:center;gap:.4rem;font-size:.88rem;}
+  .chat-msg{display:flex;align-items:center;gap:.5rem;font-size:.88rem;}
+  .chat-avatar-img{width:22px;height:22px;border-radius:50%;object-fit:cover;flex-shrink:0;}
+  .chat-avatar-emoji{font-size:1.1rem;flex-shrink:0;line-height:1;}
   .chat-name{font-weight:500;color:var(--accent);flex-shrink:0;font-size:.8rem;}
   .chat-text{color:var(--text);word-break:break-word;flex:1;}
   .chat-msg-admin .chat-name{color:var(--ts-accent);}
   .chat-msg-admin .chat-text{font-weight:700;color:var(--ts-accent);}
-  .chat-admin-badge{font-size:.58rem;background:var(--ts-bg);color:var(--ts-accent);border:1px solid var(--ts-accent);border-radius:3px;padding:0 .25rem;margin-right:.15rem;font-family:'Share Tech Mono',monospace;vertical-align:middle;}
+  .chat-admin-badge{font-size:.6rem;background:var(--ts-bg);color:var(--ts-accent);border:1px solid var(--ts-accent);border-radius:3px;padding:0 .3rem;margin-right:.2rem;font-family:'Share Tech Mono',monospace;vertical-align:middle;}
   #chat-input-row{display:flex;border-top:1px solid var(--border);}
   #chat-input{flex:1;background:transparent;border:none;padding:.75rem 1rem;font-family:'DM Sans',sans-serif;font-size:.9rem;color:var(--text);outline:none;}
   #chat-send-btn{background:var(--accent);color:#fff;border:none;padding:.75rem 1.2rem;font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:500;cursor:pointer;transition:opacity .2s;min-width:60px;}
   #chat-send-btn:hover{opacity:.88;}#chat-send-btn:disabled{opacity:.45;cursor:not-allowed;}
   #chat-disabled-msg{display:none;text-align:center;padding:1rem;font-size:.84rem;color:var(--muted);}
 
+  /* DMs */
   #dm-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:500;align-items:center;justify-content:center;padding:1rem;}
   .dm-modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:460px;max-height:80vh;overflow:hidden;display:flex;flex-direction:column;}
   .dm-header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border);}
   .dm-header-title{font-weight:600;font-size:.95rem;}
-  .dm-close{background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.1rem;transition:color .15s;}
+  .dm-close{background:none;border:none;cursor:pointer;color:var(--muted);font-size:1.1rem;transition:color .15s;line-height:1;}
   .dm-close:hover{color:#e04040;}
   #dm-user-list{flex:1;overflow-y:auto;padding:.75rem;}
   .dm-user-row{display:flex;align-items:center;gap:.6rem;padding:.7rem .5rem;border-radius:8px;cursor:pointer;transition:background .15s;}
   .dm-user-row:hover{background:var(--bg);}
+  .dm-avatar-img{width:32px;height:32px;border-radius:50%;object-fit:cover;flex-shrink:0;}
+  .dm-avatar-emoji{font-size:1.5rem;flex-shrink:0;line-height:1;}
   .dm-user-name{font-size:.92rem;font-weight:500;flex:1;}
   .dm-unread-dot{width:8px;height:8px;background:#e04040;border-radius:50%;flex-shrink:0;}
   #dm-conversation{display:none;flex:1;flex-direction:column;overflow:hidden;}
@@ -577,18 +691,7 @@
   #dm-send-btn{background:var(--accent);color:#fff;border:none;padding:.75rem 1.2rem;font-family:'DM Sans',sans-serif;font-size:.88rem;font-weight:500;cursor:pointer;transition:opacity .2s;}
   #dm-send-btn:hover{opacity:.88;}
 
-  /* Credit — clickable easter egg */
-  .credit{text-align:center;margin-top:3rem;font-size:.68rem;color:#ccc;letter-spacing:.08em;cursor:default;user-select:none;transition:color .2s;}
-  .credit:hover{color:var(--ts-accent);}
-
-  /* Game overlay */
-  #game-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:3000;align-items:center;justify-content:center;flex-direction:column;gap:1rem;}
-  .game-header{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:560px;padding:0 .5rem;}
-  .game-title{font-family:'Share Tech Mono',monospace;font-size:.82rem;color:var(--ts-accent);letter-spacing:.2em;}
-  .game-close{background:none;border:1px solid var(--ts-border);color:var(--ts-muted);font-family:'Share Tech Mono',monospace;font-size:.68rem;padding:.3rem .65rem;cursor:pointer;border-radius:2px;transition:all .15s;letter-spacing:.1em;}
-  .game-close:hover{border-color:var(--ts-danger);color:var(--ts-danger);}
-  #game-canvas{border:1px solid var(--ts-border);border-radius:4px;display:block;touch-action:none;}
-  .game-hint{font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--ts-muted);letter-spacing:.1em;text-align:center;}
+  .credit{text-align:center;margin-top:3rem;font-size:.68rem;color:#ccc;letter-spacing:.08em;}
 
   /* Scan */
   #scan-overlay{display:none;position:fixed;inset:0;background:#000;z-index:2000;align-items:center;justify-content:center;flex-direction:column;overflow:hidden;}
@@ -603,6 +706,7 @@
   .scan-bar:nth-child(1){animation-delay:0s;height:60%}.scan-bar:nth-child(2){animation-delay:.1s;height:100%}.scan-bar:nth-child(3){animation-delay:.2s;height:40%}.scan-bar:nth-child(4){animation-delay:.3s;height:80%}.scan-bar:nth-child(5){animation-delay:.4s;height:55%}
   @keyframes barPulse{0%,100%{transform:scaleY(1);opacity:1}50%{transform:scaleY(.4);opacity:.4}}
 
+  /* Admin */
   #admin-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:1000;align-items:center;justify-content:center;padding:1rem;}
   .admin-modal{background:var(--ts-bg);border:1px solid var(--ts-border);border-radius:4px;width:100%;max-width:560px;max-height:88vh;overflow-y:auto;box-shadow:0 0 40px rgba(0,207,255,.15),0 0 80px rgba(0,0,0,.8);}
   .admin-header{display:flex;align-items:center;justify-content:space-between;padding:1.25rem 1.5rem;border-bottom:1px solid var(--ts-border);position:sticky;top:0;background:var(--ts-bg);z-index:1;}
@@ -644,6 +748,7 @@
 </head>
 <body>
 
+<!-- Login -->
 <div id="login-section">
   <div class="eyebrow">Klasseavstemning</div>
   <h1>Hva skal vi ha på oss?</h1>
@@ -651,23 +756,32 @@
   <button class="google-btn" onclick="loginGoogle()"><div class="google-icon"></div>Logg inn med Google</button>
 </div>
 
+<!-- Profile setup -->
 <div id="profile-setup">
   <div class="eyebrow">Velkommen</div>
   <h2>Lag profilen din</h2>
-  <p>Velg et brukernavn — du får et unikt farget avatar automatisk.</p>
+  <p>Velg et brukernavn og profilbilde.</p>
   <div class="setup-card">
     <div>
-      <span class="setup-label">Forhåndsvisning</span>
-      <div id="avatar-preview"></div>
+      <span class="setup-label">Profilbilde</span>
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+        <div id="avatar-preview" data-type="emoji" data-value="👤">👤</div>
+        <div style="display:flex;flex-direction:column;gap:.4rem">
+          <label class="upload-label">Last opp bilde <input type="file" id="avatar-upload" accept="image/*" style="display:none"></label>
+          <span style="font-size:.75rem;color:var(--muted)">eller velg et emoji:</span>
+        </div>
+      </div>
+      <div class="preset-avatar-grid" id="preset-avatar-grid" style="margin-top:.75rem"></div>
     </div>
     <div>
       <span class="setup-label">Brukernavn</span>
-      <input type="text" class="setup-input" id="username-input" placeholder="Velg et brukernavn..." maxlength="20" autocomplete="off">
+      <input type="text" class="setup-input" id="username-input" placeholder="Hva vil du hete?" maxlength="20">
     </div>
     <button id="save-profile-btn" onclick="saveProfile()">Lagre og fortsett</button>
   </div>
 </div>
 
+<!-- Main -->
 <div id="main-section">
   <div class="container">
     <header>
@@ -675,6 +789,7 @@
       <h1>Hva skal vi ha på oss?</h1>
       <p class="subtitle">Foreslå et antrekk og stem på favoritten din.</p>
     </header>
+
     <div class="topbar">
       <span id="user-info"></span>
       <div class="topbar-right">
@@ -683,17 +798,21 @@
         <button class="text-btn danger" onclick="logout()">Logg ut</button>
       </div>
     </div>
+
     <div id="lock-banner">Avstemningen er låst — ingen nye forslag eller stemmer.</div>
     <div id="countdown-bar"><span id="countdown-label"></span></div>
+
     <div class="form-box">
       <label class="form-label" id="form-main-label">Antrekkforslag</label>
       <textarea id="outfit-desc" placeholder="f.eks. Blå jeans med hvit t-skjorte"></textarea>
       <button id="submit-btn">Send inn forslag</button>
     </div>
+
     <div class="section-title">Alle forslag — rangert etter stemmer</div>
     <div class="vote-counter" id="vote-counter"></div>
     <div id="empty-state"><p>Ingen forslag ennå.</p></div>
     <div id="cards-container"></div>
+
     <div class="chat-section">
       <div class="section-title" style="margin-top:2rem">Chat</div>
       <div class="chat-box">
@@ -705,10 +824,12 @@
         </div>
       </div>
     </div>
-    <div class="credit" onclick="creditClick()">vibe-kodet av Alfred</div>
+
+    <div class="credit">vibe-kodet av Alfred</div>
   </div>
 </div>
 
+<!-- DM overlay -->
 <div id="dm-overlay" onclick="if(event.target===this)closeDMs()">
   <div class="dm-modal">
     <div class="dm-header"><span class="dm-header-title">Direktemeldinger</span><button class="dm-close" onclick="closeDMs()">✕</button></div>
@@ -721,16 +842,7 @@
   </div>
 </div>
 
-<!-- Game easter egg -->
-<div id="game-overlay">
-  <div class="game-header">
-    <div class="game-title">⬡ JARVIS DEFENSE SYSTEM</div>
-    <button class="game-close" onclick="closeGame()">[ AVSLUTT ]</button>
-  </div>
-  <canvas id="game-canvas"></canvas>
-  <div class="game-hint">PILTASTER / WASD for å bevege · MELLOMROM for å skyte · R for å starte igjen</div>
-</div>
-
+<!-- Scan -->
 <div id="scan-overlay">
   <div id="scan-line"></div>
   <div id="scan-content">
@@ -740,6 +852,7 @@
   </div>
 </div>
 
+<!-- Admin -->
 <div id="admin-overlay" onclick="if(event.target===this)closeAdmin()">
   <div class="admin-modal">
     <div class="admin-header">
