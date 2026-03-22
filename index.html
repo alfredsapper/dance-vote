@@ -101,6 +101,8 @@
       }
     }, 2600);
   }
+
+  function playPowerUp(){
     const t=audioCtx.currentTime;
     const thud=audioCtx.createOscillator(),tg=audioCtx.createGain();
     thud.connect(tg);tg.connect(audioCtx.destination);thud.type="sine";
