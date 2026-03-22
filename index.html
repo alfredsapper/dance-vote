@@ -58,7 +58,7 @@
     [[659,987,1319],[659,987,1319]].forEach(([f1,f2,f3],i)=>{const st=t+1.9+i*0.22;[f1,f2,f3].forEach(f=>guitarNote(f,st,.18,.12));});
     setTimeout(()=>{
       if(!('speechSynthesis' in window))return;
-      const u=new SpeechSynthesisUtterance("Welcome home, sir. Good to have you back. The voting data is ready for your review.");
+      const u=new SpeechSynthesisUtterance("Welcome home sir. Good to have you back. The voting data is ready for review.");
       u.rate=0.82;u.pitch=0.4;u.volume=1;u.lang="en-US";
       const trySpeak=()=>{
         const voices=window.speechSynthesis.getVoices();
@@ -254,9 +254,11 @@
   window.openGame=function(){
     audioCtx.resume();
     document.getElementById("game-overlay").style.display="flex";
+    document.getElementById("game-restart-btn").style.display="none";
     startGame();
   };
   window.closeGame=function(){document.getElementById("game-overlay").style.display="none";gameRunning=false;if(gameLoop)cancelAnimationFrame(gameLoop);};
+  window.restartGame=function(){gameRunning=false;if(gameLoop)cancelAnimationFrame(gameLoop);document.getElementById("game-restart-btn").style.display="none";startGame();};
 
   function startGame(){
     const canvas=document.getElementById("game-canvas");
@@ -303,6 +305,7 @@
       player.bullets=player.bullets.filter(b=>{let hit=false;enemies.forEach(e=>{if(e.alive&&b.x>e.x&&b.x<e.x+24&&b.y>e.y&&b.y<e.y+16){e.alive=false;hit=true;score+=10;phit();}});return!hit;});
       enemyBullets=enemyBullets.filter(b=>{if(b.x>player.x&&b.x<player.x+player.w&&b.y>player.y&&b.y<player.y+player.h){lives--;phit();if(lives<=0)gameOver=true;return false;}return true;});
       if(alive.some(e=>e.y+16>=player.y))gameOver=true;
+      if((gameOver||won)&&document.getElementById("game-restart-btn").style.display==="none"){document.getElementById("game-restart-btn").style.display="block";}
     }
 
     function draw(){
@@ -508,7 +511,7 @@
     <div class="topbar">
       <span id="user-info"></span>
       <div class="topbar-right">
-        <a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ" target="_blank" rel="noopener" class="rules-btn">Regler</a>
+        <a href="https://m.youtube.com/watch?v=QDia3e12czc&pp=ygUQcmljayByb2xsIG5vIGFkcw%3D%3D" target="_blank" rel="noopener" class="rules-btn">Regler</a>
         <button class="dm-trigger" onclick="openDMs()" style="position:relative">DM <span id="dm-badge" style="display:none"></span></button>
         <button class="admin-trigger" onclick="openAdmin()">⬡ ADMIN</button>
         <button class="text-btn danger" onclick="logout()">Logg ut</button>
@@ -560,6 +563,7 @@
   </div>
   <canvas id="game-canvas"></canvas>
   <div class="game-hint">PILTASTER / WASD · MELLOMROM for å skyte · R for å starte igjen</div>
+  <button id="game-restart-btn" style="display:none;background:transparent;border:1px solid var(--ts-accent);color:var(--ts-accent);font-family:'Share Tech Mono',monospace;font-size:.75rem;letter-spacing:.15em;padding:.6rem 1.2rem;cursor:pointer;border-radius:2px;margin-top:.5rem;" onclick="restartGame()">[ START IGJEN ]</button>
 </div>
 
 <!-- Scan -->
