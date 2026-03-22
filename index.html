@@ -9,7 +9,7 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
-  import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, increment, query, orderBy, where, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+  import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, setDoc, deleteDoc, increment, query, orderBy, where, getDocs, serverTimestamp, getDoc } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
   import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
 
   const firebaseConfig = {
@@ -22,12 +22,15 @@
   };
 
   const ADMIN_PASSWORD = "dans#pannekake";
+  const CHAT_COOLDOWN_MS = 20000;
 
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
   const auth = getAuth(app);
   const outfitsRef = collection(db, "outfits");
   const votesRef = collection(db, "votes");
+  const chatRef = collection(db, "chat");
+  const settingsRef = doc(db, "settings", "global");
 
   let currentUser = null;
   let isAdmin = false;
@@ -35,87 +38,163 @@
   let myVoteId = null;
   let myVotedForId = null;
   let allOutfits = [];
+  let settings = { locked: false, hideScores: false, countdown: null };
+  let lastChatTime = 0;
+  let chatCooldownInterval = null;
+  let countdownInterval = null;
 
-  // ── Audio ────────────────────────────────────────────────────
+  // ── Audio ─────────────────────────────────────────────────────
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
   function playPowerUp() {
-    // Iron Man suit-up style: deep hum builds then bright chord
     const t = audioCtx.currentTime;
-
-    // Deep bass hum
-    const bass = audioCtx.createOscillator();
-    const bassGain = audioCtx.createGain();
-    bass.connect(bassGain); bassGain.connect(audioCtx.destination);
-    bass.type = "sine"; bass.frequency.setValueAtTime(60, t);
-    bass.frequency.linearRampToValueAtTime(120, t + 0.4);
-    bassGain.gain.setValueAtTime(0, t);
-    bassGain.gain.linearRampToValueAtTime(0.3, t + 0.15);
-    bassGain.gain.linearRampToValueAtTime(0, t + 0.5);
-    bass.start(t); bass.stop(t + 0.5);
-
-    // Rising arpeggio
-    [261, 329, 392, 523, 659, 784].forEach((freq, i) => {
-      const osc = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      osc.connect(g); g.connect(audioCtx.destination);
-      osc.type = "triangle";
-      osc.frequency.value = freq;
-      g.gain.setValueAtTime(0, t + 0.1 + i * 0.07);
-      g.gain.linearRampToValueAtTime(0.15, t + 0.12 + i * 0.07);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 0.25 + i * 0.07);
-      osc.start(t + 0.1 + i * 0.07);
-      osc.stop(t + 0.35 + i * 0.07);
-    });
-
-    // Final bright chord
-    [523, 659, 784].forEach((freq, i) => {
+    const thud = audioCtx.createOscillator();
+    const thudGain = audioCtx.createGain();
+    thud.connect(thudGain); thudGain.connect(audioCtx.destination);
+    thud.type = "sine"; thud.frequency.setValueAtTime(80, t);
+    thud.frequency.exponentialRampToValueAtTime(30, t + 0.12);
+    thudGain.gain.setValueAtTime(0.5, t);
+    thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    thud.start(t); thud.stop(t + 0.2);
+    const bufSize = audioCtx.sampleRate * 0.08;
+    const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+    const noise = audioCtx.createBufferSource();
+    const noiseGain = audioCtx.createGain();
+    const noiseFilter = audioCtx.createBiquadFilter();
+    noise.buffer = buf;
+    noise.connect(noiseFilter); noiseFilter.connect(noiseGain); noiseGain.connect(audioCtx.destination);
+    noiseFilter.type = "bandpass"; noiseFilter.frequency.value = 3000; noiseFilter.Q.value = 0.5;
+    noiseGain.gain.setValueAtTime(0.3, t + 0.05);
+    noise.start(t + 0.05);
+    const whine = audioCtx.createOscillator();
+    const whineGain = audioCtx.createGain();
+    whine.connect(whineGain); whineGain.connect(audioCtx.destination);
+    whine.type = "sawtooth";
+    whine.frequency.setValueAtTime(80, t + 0.1);
+    whine.frequency.exponentialRampToValueAtTime(1200, t + 0.7);
+    whineGain.gain.setValueAtTime(0.0, t + 0.1);
+    whineGain.gain.linearRampToValueAtTime(0.12, t + 0.35);
+    whineGain.gain.linearRampToValueAtTime(0.08, t + 0.65);
+    whineGain.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
+    whine.start(t + 0.1); whine.stop(t + 0.8);
+    const hum = audioCtx.createOscillator();
+    const humGain = audioCtx.createGain();
+    hum.connect(humGain); humGain.connect(audioCtx.destination);
+    hum.type = "sine"; hum.frequency.value = 120;
+    humGain.gain.setValueAtTime(0, t + 0.5);
+    humGain.gain.linearRampToValueAtTime(0.15, t + 0.75);
+    humGain.gain.linearRampToValueAtTime(0.06, t + 1.1);
+    humGain.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+    hum.start(t + 0.5); hum.stop(t + 1.5);
+    [523, 659, 784, 1047].forEach((freq, i) => {
       const osc = audioCtx.createOscillator();
       const g = audioCtx.createGain();
       osc.connect(g); g.connect(audioCtx.destination);
       osc.type = "sine"; osc.frequency.value = freq;
-      g.gain.setValueAtTime(0.12, t + 0.65);
-      g.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
-      osc.start(t + 0.65); osc.stop(t + 1.2);
+      g.gain.setValueAtTime(0.0, t + 0.72 + i * 0.025);
+      g.gain.linearRampToValueAtTime(0.1, t + 0.76 + i * 0.025);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.4);
+      osc.start(t + 0.72 + i * 0.025); osc.stop(t + 1.5);
     });
   }
 
   function playAccessDenied() {
     const t = audioCtx.currentTime;
-    // Harsh descending buzz
     const osc = audioCtx.createOscillator();
     const g = audioCtx.createGain();
-    const dist = audioCtx.createWaveShaper();
-    const curve = new Float32Array(256);
-    for (let i = 0; i < 256; i++) curve[i] = i < 128 ? -1 : 1;
-    dist.curve = curve;
-    osc.connect(dist); dist.connect(g); g.connect(audioCtx.destination);
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(300, t);
-    osc.frequency.exponentialRampToValueAtTime(80, t + 0.5);
-    g.gain.setValueAtTime(0.2, t);
-    g.gain.setValueAtTime(0.2, t + 0.1);
-    g.gain.setValueAtTime(0, t + 0.15);
-    g.gain.setValueAtTime(0.2, t + 0.2);
-    g.gain.setValueAtTime(0, t + 0.25);
-    g.gain.setValueAtTime(0.2, t + 0.3);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-    osc.start(t); osc.stop(t + 0.6);
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.type = "square"; osc.frequency.value = 120;
+    g.gain.setValueAtTime(0.0, t);
+    g.gain.linearRampToValueAtTime(0.2, t + 0.02);
+    g.gain.setValueAtTime(0.2, t + 0.08);
+    g.gain.setValueAtTime(0.0, t + 0.1);
+    g.gain.setValueAtTime(0.2, t + 0.15);
+    g.gain.setValueAtTime(0.0, t + 0.17);
+    g.gain.setValueAtTime(0.2, t + 0.22);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.38);
+    osc.start(t); osc.stop(t + 0.4);
+    const alarm = audioCtx.createOscillator();
+    const alarmGain = audioCtx.createGain();
+    alarm.connect(alarmGain); alarmGain.connect(audioCtx.destination);
+    alarm.type = "sine";
+    alarm.frequency.setValueAtTime(880, t + 0.05);
+    alarm.frequency.exponentialRampToValueAtTime(220, t + 0.5);
+    alarmGain.gain.setValueAtTime(0.18, t + 0.05);
+    alarmGain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+    alarm.start(t + 0.05); alarm.stop(t + 0.6);
   }
 
   function playScanBeep(idx) {
     const t = audioCtx.currentTime;
-    const freqs = [400, 480, 520, 600, 440];
+    const pitches = [600, 700, 750, 800, 660];
     const osc = audioCtx.createOscillator();
     const g = audioCtx.createGain();
     osc.connect(g); g.connect(audioCtx.destination);
-    osc.type = "sine"; osc.frequency.value = freqs[idx % freqs.length];
-    g.gain.setValueAtTime(0.1, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
-    osc.start(t); osc.stop(t + 0.12);
+    osc.type = "square"; osc.frequency.value = pitches[idx % pitches.length];
+    g.gain.setValueAtTime(0.08, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    osc.start(t); osc.stop(t + 0.08);
   }
 
-  // ── Auth ─────────────────────────────────────────────────────
+  function playExplosion() {
+    const t = audioCtx.currentTime;
+    const bufSize = audioCtx.sampleRate * 0.6;
+    const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 2);
+    const noise = audioCtx.createBufferSource();
+    const ng = audioCtx.createGain();
+    const nf = audioCtx.createBiquadFilter();
+    noise.buffer = buf;
+    noise.connect(nf); nf.connect(ng); ng.connect(audioCtx.destination);
+    nf.type = "lowpass"; nf.frequency.value = 800;
+    ng.gain.setValueAtTime(0.8, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    noise.start(t);
+    const boom = audioCtx.createOscillator();
+    const bg = audioCtx.createGain();
+    boom.connect(bg); bg.connect(audioCtx.destination);
+    boom.type = "sine";
+    boom.frequency.setValueAtTime(120, t);
+    boom.frequency.exponentialRampToValueAtTime(20, t + 0.4);
+    bg.gain.setValueAtTime(0.6, t);
+    bg.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+    boom.start(t); boom.stop(t + 0.5);
+  }
+
+  // ── Explosion animation ───────────────────────────────────────
+  function explode(el) {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const colors = ["#ff4400","#ff8800","#ffcc00","#ff2200","#ffee00","#ffffff"];
+    for (let i = 0; i < 28; i++) {
+      const p = document.createElement("div");
+      p.className = "particle";
+      const angle = (i / 28) * Math.PI * 2;
+      const speed = 60 + Math.random() * 120;
+      const size = 4 + Math.random() * 8;
+      const color = colors[Math.floor(Math.random() * colors.length)];
+      p.style.cssText = `
+        left:${cx}px; top:${cy}px; width:${size}px; height:${size}px;
+        background:${color}; border-radius:${Math.random() > 0.5 ? "50%" : "2px"};
+        --dx:${Math.cos(angle) * speed}px; --dy:${Math.sin(angle) * speed}px;
+      `;
+      document.body.appendChild(p);
+      setTimeout(() => p.remove(), 800);
+    }
+    // Flash
+    const flash = document.createElement("div");
+    flash.className = "explosion-flash";
+    flash.style.cssText = `left:${cx - 30}px; top:${cy - 30}px;`;
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 400);
+    playExplosion();
+  }
+
+  // ── Auth ──────────────────────────────────────────────────────
   onAuthStateChanged(auth, async (user) => {
     currentUser = user;
     if (user) {
@@ -123,8 +202,11 @@
       document.getElementById("main-section").style.display = "block";
       document.getElementById("user-info").textContent = user.displayName || user.email;
       await loadMyData();
-      // Attach submit listener now that DOM is visible
       document.getElementById("submit-btn").addEventListener("click", submitOutfit);
+      document.getElementById("chat-send-btn").addEventListener("click", sendChatMessage);
+      document.getElementById("chat-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
+      });
     } else {
       document.getElementById("login-section").style.display = "flex";
       document.getElementById("main-section").style.display = "none";
@@ -135,9 +217,7 @@
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
-    } catch(e) {
-      alert("Kunne ikke logge inn: " + e.message);
-    }
+    } catch(e) { alert("Kunne ikke logge inn: " + e.message); }
   };
 
   window.logout = async function() {
@@ -145,58 +225,83 @@
     myOutfitId = null; myVoteId = null; myVotedForId = null;
   };
 
-  // ── Load my data ─────────────────────────────────────────────
+  // ── Load my data ──────────────────────────────────────────────
   async function loadMyData() {
     if (!currentUser) return;
-    const myOutfitQ = query(outfitsRef, where("uid", "==", currentUser.uid));
-    const myOutfitSnap = await getDocs(myOutfitQ);
+    const myOutfitSnap = await getDocs(query(outfitsRef, where("uid", "==", currentUser.uid)));
     if (!myOutfitSnap.empty) myOutfitId = myOutfitSnap.docs[0].id;
-
-    const myVoteQ = query(votesRef, where("uid", "==", currentUser.uid));
-    const myVoteSnap = await getDocs(myVoteQ);
-    if (!myVoteSnap.empty) {
-      myVoteId = myVoteSnap.docs[0].id;
-      myVotedForId = myVoteSnap.docs[0].data().outfitId;
-    }
+    const myVoteSnap = await getDocs(query(votesRef, where("uid", "==", currentUser.uid)));
+    if (!myVoteSnap.empty) { myVoteId = myVoteSnap.docs[0].id; myVotedForId = myVoteSnap.docs[0].data().outfitId; }
     renderForm();
+  }
+
+  // ── Settings listener ─────────────────────────────────────────
+  onSnapshot(settingsRef, (snap) => {
+    if (snap.exists()) {
+      settings = { locked: false, hideScores: false, countdown: null, ...snap.data() };
+    } else {
+      settings = { locked: false, hideScores: false, countdown: null };
+    }
+    applySettings();
+    if (isAdmin) renderAdminControls();
+  });
+
+  function applySettings() {
+    // Lock banner
+    const banner = document.getElementById("lock-banner");
+    banner.style.display = settings.locked ? "block" : "none";
+    // Submit btn
+    const submitBtn = document.getElementById("submit-btn");
+    if (submitBtn) submitBtn.disabled = settings.locked;
+    // Countdown
+    if (countdownInterval) clearInterval(countdownInterval);
+    if (settings.countdown) {
+      updateCountdown();
+      countdownInterval = setInterval(updateCountdown, 1000);
+    } else {
+      document.getElementById("countdown-bar").style.display = "none";
+    }
+  }
+
+  function updateCountdown() {
+    const bar = document.getElementById("countdown-bar");
+    const label = document.getElementById("countdown-label");
+    if (!settings.countdown) { bar.style.display = "none"; return; }
+    const remaining = settings.countdown - Date.now();
+    if (remaining <= 0) {
+      bar.style.display = "none";
+      clearInterval(countdownInterval);
+      return;
+    }
+    bar.style.display = "block";
+    const h = Math.floor(remaining / 3600000);
+    const m = Math.floor((remaining % 3600000) / 60000);
+    const s = Math.floor((remaining % 60000) / 1000);
+    label.textContent = h > 0 ? `${h}t ${m}m ${s}s igjen` : m > 0 ? `${m}m ${s}s igjen` : `${s}s igjen`;
   }
 
   // ── Submit / Edit ─────────────────────────────────────────────
   async function submitOutfit() {
     if (!currentUser) return;
+    if (settings.locked) { alert("Avstemningen er låst."); return; }
     const descInput = document.getElementById("outfit-desc");
     const desc = descInput.value.trim();
     if (!desc) { shake(descInput); return; }
-
     const btn = document.getElementById("submit-btn");
-    btn.disabled = true;
-    btn.textContent = "Lagrer...";
-
+    btn.disabled = true; btn.textContent = "Lagrer...";
     try {
       if (myOutfitId) {
-        await updateDoc(doc(db, "outfits", myOutfitId), {
-          description: desc, votes: 0, updatedAt: serverTimestamp()
-        });
+        await updateDoc(doc(db, "outfits", myOutfitId), { description: desc, votes: 0, updatedAt: serverTimestamp() });
         const votesSnap = await getDocs(query(votesRef, where("outfitId", "==", myOutfitId)));
         for (const v of votesSnap.docs) await deleteDoc(v.ref);
         if (myVotedForId === myOutfitId) { myVoteId = null; myVotedForId = null; }
       } else {
-        const docRef = await addDoc(outfitsRef, {
-          uid: currentUser.uid,
-          name: currentUser.displayName || "Anonym",
-          description: desc,
-          votes: 0,
-          createdAt: serverTimestamp()
-        });
+        const docRef = await addDoc(outfitsRef, { uid: currentUser.uid, name: currentUser.displayName || "Anonym", description: desc, votes: 0, createdAt: serverTimestamp() });
         myOutfitId = docRef.id;
       }
       renderForm();
-    } catch(e) {
-      alert("Feil: " + e.message);
-    }
-
-    btn.disabled = false;
-    btn.textContent = myOutfitId ? "Lagre endringer" : "Send inn forslag";
+    } catch(e) { alert("Feil: " + e.message); }
+    btn.disabled = settings.locked; btn.textContent = myOutfitId ? "Lagre endringer" : "Send inn forslag";
   }
 
   function renderForm() {
@@ -204,7 +309,6 @@
     const submitBtn = document.getElementById("submit-btn");
     const formLabel = document.getElementById("form-main-label");
     if (!descInput || !submitBtn || !formLabel) return;
-
     if (myOutfitId) {
       const mine = allOutfits.find(o => o.id === myOutfitId);
       if (mine) descInput.value = mine.description;
@@ -215,13 +319,14 @@
       submitBtn.textContent = "Send inn forslag";
       formLabel.textContent = "Antrekkforslag";
     }
+    submitBtn.disabled = settings.locked;
   }
 
   // ── Vote ──────────────────────────────────────────────────────
   async function voteForOutfit(outfitId) {
     if (!currentUser) return;
+    if (settings.locked) { alert("Avstemningen er låst."); return; }
     if (outfitId === myOutfitId) { alert("Du kan ikke stemme på ditt eget forslag."); return; }
-
     if (myVotedForId === outfitId) {
       if (myVoteId) await deleteDoc(doc(db, "votes", myVoteId));
       await updateDoc(doc(db, "outfits", outfitId), { votes: increment(-1) });
@@ -242,11 +347,115 @@
     if (btn) voteForOutfit(btn.dataset.id);
   });
 
+  // ── Chat ──────────────────────────────────────────────────────
+  async function sendChatMessage() {
+    if (!currentUser) return;
+    const input = document.getElementById("chat-input");
+    const msg = input.value.trim();
+    if (!msg) return;
+    const now = Date.now();
+    if (now - lastChatTime < CHAT_COOLDOWN_MS) {
+      const remaining = Math.ceil((CHAT_COOLDOWN_MS - (now - lastChatTime)) / 1000);
+      alert(`Vent ${remaining} sekunder før du sender igjen.`);
+      return;
+    }
+    lastChatTime = now;
+    input.value = "";
+    startChatCooldown();
+    await addDoc(chatRef, { uid: currentUser.uid, name: currentUser.displayName || "Anonym", message: msg, createdAt: serverTimestamp() });
+  }
+
+  function startChatCooldown() {
+    const btn = document.getElementById("chat-send-btn");
+    if (chatCooldownInterval) clearInterval(chatCooldownInterval);
+    let remaining = Math.ceil(CHAT_COOLDOWN_MS / 1000);
+    btn.disabled = true;
+    btn.textContent = `${remaining}s`;
+    chatCooldownInterval = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(chatCooldownInterval);
+        btn.disabled = false;
+        btn.textContent = "Send";
+      } else {
+        btn.textContent = `${remaining}s`;
+      }
+    }, 1000);
+  }
+
+  // Chat listener
+  const chatQ = query(chatRef, orderBy("createdAt", "asc"));
+  onSnapshot(chatQ, (snapshot) => {
+    const container = document.getElementById("chat-messages");
+    container.innerHTML = "";
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      const id = docSnap.id;
+      const div = document.createElement("div");
+      div.className = "chat-msg";
+      div.dataset.id = id;
+      div.innerHTML = `
+        <span class="chat-name">${escapeHtml(data.name)}</span>
+        <span class="chat-text">${escapeHtml(data.message)}</span>
+        ${isAdmin ? `<button class="chat-delete-btn" data-id="${id}">✕</button>` : ""}
+      `;
+      container.appendChild(div);
+    });
+    container.scrollTop = container.scrollHeight;
+    // Re-attach admin delete listeners
+    container.querySelectorAll(".chat-delete-btn").forEach(btn => {
+      btn.addEventListener("click", () => deleteChatMessage(btn.dataset.id, btn.closest(".chat-msg")));
+    });
+  });
+
+  async function deleteChatMessage(id, el) {
+    explode(el);
+    await new Promise(r => setTimeout(r, 300));
+    el.style.opacity = "0";
+    await new Promise(r => setTimeout(r, 200));
+    await deleteDoc(doc(db, "chat", id));
+  }
+
+  // ── Outfits realtime ──────────────────────────────────────────
+  const q = query(outfitsRef, orderBy("votes", "desc"));
+  onSnapshot(q, (snapshot) => {
+    allOutfits = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (myOutfitId && !allOutfits.find(o => o.id === myOutfitId)) { myOutfitId = null; }
+    const container = document.getElementById("cards-container");
+    const empty = document.getElementById("empty-state");
+    const totalVotes = allOutfits.reduce((s, o) => s + (o.votes || 0), 0);
+    const counterEl = document.getElementById("vote-counter");
+    if (counterEl) counterEl.textContent = `${totalVotes} stemme${totalVotes !== 1 ? "r" : ""} totalt`;
+    if (snapshot.empty) { container.innerHTML = ""; empty.style.display = "block"; }
+    else {
+      empty.style.display = "none"; container.innerHTML = "";
+      let rank = 1;
+      allOutfits.forEach(data => {
+        const id = data.id;
+        const isVoted = myVotedForId === id;
+        const isOwn = myOutfitId === id;
+        const votesDisplay = settings.hideScores && !isAdmin ? "?" : data.votes;
+        const card = document.createElement("div");
+        card.className = "card" + (rank === 1 && data.votes > 0 ? " leading" : "") + (isOwn ? " own" : "");
+        card.innerHTML = `
+          <div class="card-rank">#${rank}</div>
+          <div class="card-content">
+            <div class="card-desc">${escapeHtml(data.description)}</div>
+            <div class="card-meta">${isOwn ? '<span class="own-tag">Ditt forslag</span>' : `foreslått av <span>${escapeHtml(data.name)}</span>`}</div>
+          </div>
+          ${!isOwn ? `<button class="vote-btn ${isVoted ? "voted" : ""}" data-id="${id}">${isVoted ? "✓ Stemt" : "Stem"}<span class="vote-count">${votesDisplay}</span></button>` : `<span class="vote-count-own">${votesDisplay} stemmer</span>`}
+        `;
+        container.appendChild(card);
+        rank++;
+      });
+    }
+    renderForm();
+    if (isAdmin) { renderAdminList(); renderAdminControls(); }
+  });
+
   // ── Admin ─────────────────────────────────────────────────────
   window.openAdmin = function() {
     audioCtx.resume();
-
-    // Initial scan activation sound
     const t0 = audioCtx.currentTime;
     const initOsc = audioCtx.createOscillator();
     const initGain = audioCtx.createGain();
@@ -258,45 +467,19 @@
     initGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
     initOsc.start(t0); initOsc.stop(t0 + 0.4);
 
-    // Fullscreen scan overlay
     const scanOverlay = document.getElementById("scan-overlay");
-    const scanLine = document.getElementById("scan-line");
     const scanText = document.getElementById("scan-text");
     scanOverlay.style.display = "flex";
-    scanText.textContent = "// INITIALISERER...";
-
-    // Scan sound — rising beeps
-    const t = audioCtx.currentTime;
-    [110, 220, 330, 440, 550, 660].forEach((freq, i) => {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.connect(gain); gain.connect(audioCtx.destination);
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(freq, t + i * 0.12);
-      gain.gain.setValueAtTime(0.12, t + i * 0.12);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.12 + 0.18);
-      osc.start(t + i * 0.12);
-      osc.stop(t + i * 0.12 + 0.2);
-    });
-
-    const msgs = [
-      "// INITIALISERER...",
-      "// KOBLER TIL JARVIS...",
-      "// VERIFISERER IDENTITET...",
-      "// LASTER BRUKERDATA...",
-      "// TILGANG KLAR"
-    ];
+    const msgs = ["// INITIALISERER...","// KOBLER TIL JARVIS...","// VERIFISERER IDENTITET...","// LASTER BRUKERDATA...","// TILGANG KLAR"];
     let idx = 0;
+    scanText.textContent = msgs[0];
     const interval = setInterval(() => {
       idx++;
-      if (idx < msgs.length) {
-        scanText.textContent = msgs[idx];
-        playScanBeep(idx);
-      } else {
+      if (idx < msgs.length) { scanText.textContent = msgs[idx]; playScanBeep(idx); }
+      else {
         clearInterval(interval);
         setTimeout(() => {
           scanOverlay.style.display = "none";
-          // Open modal
           const overlay = document.getElementById("admin-overlay");
           overlay.style.display = "flex";
           document.getElementById("admin-pass-input").value = "";
@@ -323,29 +506,65 @@
       isAdmin = true;
       document.getElementById("admin-login-box").style.display = "none";
       document.getElementById("admin-panel-content").style.display = "block";
+      renderAdminControls();
       renderAdminList();
     } else {
       playAccessDenied();
       const errEl = document.getElementById("admin-error");
       errEl.style.display = "block";
-      errEl.classList.remove("blink");
-      void errEl.offsetWidth;
-      errEl.classList.add("blink");
+      errEl.classList.remove("blink"); void errEl.offsetWidth; errEl.classList.add("blink");
       shake(document.getElementById("admin-pass-input"));
     }
   };
 
-  document.getElementById("admin-pass-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") window.adminLogin();
-  });
+  document.getElementById("admin-pass-input").addEventListener("keydown", (e) => { if (e.key === "Enter") window.adminLogin(); });
+
+  function renderAdminControls() {
+    const ctrl = document.getElementById("admin-controls");
+    ctrl.innerHTML = `
+      <div class="admin-control-row">
+        <span class="ts-label" style="margin:0">Avstemning</span>
+        <button class="ts-toggle-btn ${settings.locked ? "active-danger" : "active-ok"}" id="lock-btn">
+          ${settings.locked ? "[ LÅS OPP ]" : "[ LÅS ]"}
+        </button>
+      </div>
+      <div class="admin-control-row">
+        <span class="ts-label" style="margin:0">Stemmetall</span>
+        <button class="ts-toggle-btn ${settings.hideScores ? "active-danger" : "active-ok"}" id="scores-btn">
+          ${settings.hideScores ? "[ VIS TALL ]" : "[ SKJUL TALL ]"}
+        </button>
+      </div>
+      <div class="admin-control-row">
+        <span class="ts-label" style="margin:0">Countdown</span>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+          <input type="number" id="countdown-minutes" placeholder="min" min="1" style="width:70px;background:var(--ts-panel);border:1px solid var(--ts-border);color:var(--ts-accent);font-family:'Share Tech Mono',monospace;font-size:0.78rem;padding:0.3rem 0.5rem;border-radius:2px;outline:none;">
+          <button class="ts-toggle-btn active-ok" id="countdown-set-btn">[ START ]</button>
+          ${settings.countdown ? '<button class="ts-toggle-btn active-danger" id="countdown-clear-btn">[ STOPP ]</button>' : ""}
+        </div>
+      </div>
+    `;
+    document.getElementById("lock-btn").addEventListener("click", async () => {
+      await setDoc(settingsRef, { ...settings, locked: !settings.locked }, { merge: true });
+    });
+    document.getElementById("scores-btn").addEventListener("click", async () => {
+      await setDoc(settingsRef, { ...settings, hideScores: !settings.hideScores }, { merge: true });
+    });
+    document.getElementById("countdown-set-btn").addEventListener("click", async () => {
+      const mins = parseInt(document.getElementById("countdown-minutes").value);
+      if (!mins || mins < 1) return;
+      await setDoc(settingsRef, { ...settings, countdown: Date.now() + mins * 60000 }, { merge: true });
+    });
+    const clearBtn = document.getElementById("countdown-clear-btn");
+    if (clearBtn) clearBtn.addEventListener("click", async () => {
+      await setDoc(settingsRef, { ...settings, countdown: null }, { merge: true });
+    });
+  }
 
   async function adminDeleteOutfit(id, rowEl) {
-    if (!confirm("Slett dette forslaget?")) return;
-
-    // TERMINATED animation
-    rowEl.classList.add("terminated");
-    await new Promise(r => setTimeout(r, 700));
-
+    explode(rowEl);
+    await new Promise(r => setTimeout(r, 350));
+    rowEl.style.opacity = "0";
+    await new Promise(r => setTimeout(r, 200));
     const votesSnap = await getDocs(query(votesRef, where("outfitId", "==", id)));
     for (const v of votesSnap.docs) await deleteDoc(v.ref);
     await deleteDoc(doc(db, "outfits", id));
@@ -355,13 +574,9 @@
   function renderAdminList() {
     const list = document.getElementById("admin-list");
     const totalVotes = allOutfits.reduce((s, o) => s + (o.votes || 0), 0);
-    document.getElementById("admin-stats").innerHTML =
-      `STATUS: <span>ONLINE</span> · FORSLAG: <span>${allOutfits.length}</span> · STEMMER: <span>${totalVotes}</span>`;
-    list.innerHTML = "";
-    if (allOutfits.length === 0) {
-      list.innerHTML = '<div class="admin-empty">// INGEN FORSLAG</div>';
-      return;
-    }
+    document.getElementById("admin-stats").innerHTML = `STATUS: <span>ONLINE</span> · FORSLAG: <span>${allOutfits.length}</span> · STEMMER: <span>${totalVotes}</span>`;
+    list.innerHTML = "<div class='ts-label' style='margin-bottom:0.5rem'>FORSLAG</div>";
+    if (allOutfits.length === 0) { list.innerHTML += '<div class="admin-empty">// INGEN FORSLAG</div>'; return; }
     allOutfits.forEach(o => {
       const row = document.createElement("div");
       row.className = "admin-row";
@@ -377,59 +592,6 @@
     });
   }
 
-  // ── Realtime ──────────────────────────────────────────────────
-  const q = query(outfitsRef, orderBy("votes", "desc"));
-  onSnapshot(q, (snapshot) => {
-    allOutfits = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-
-    const container = document.getElementById("cards-container");
-    const empty = document.getElementById("empty-state");
-    const totalVotes = allOutfits.reduce((s, o) => s + (o.votes || 0), 0);
-    const counterEl = document.getElementById("vote-counter");
-    if (counterEl) counterEl.textContent = `${totalVotes} stemme${totalVotes !== 1 ? "r" : ""} totalt`;
-
-    // If my outfit was deleted by admin, reset so I can submit a new one
-    if (myOutfitId && !allOutfits.find(o => o.id === myOutfitId)) {
-      myOutfitId = null;
-      renderForm();
-    }
-
-    if (snapshot.empty) {
-      container.innerHTML = "";
-      empty.style.display = "block";
-    } else {
-      empty.style.display = "none";
-      container.innerHTML = "";
-      let rank = 1;
-      allOutfits.forEach(data => {
-        const id = data.id;
-        const isVoted = myVotedForId === id;
-        const isOwn = myOutfitId === id;
-        const card = document.createElement("div");
-        card.className = "card" + (rank === 1 && data.votes > 0 ? " leading" : "") + (isOwn ? " own" : "");
-        card.innerHTML = `
-          <div class="card-rank">#${rank}</div>
-          <div class="card-content">
-            <div class="card-desc">${escapeHtml(data.description)}</div>
-            <div class="card-meta">
-              ${isOwn ? '<span class="own-tag">Ditt forslag</span>' : `foreslått av <span>${escapeHtml(data.name)}</span>`}
-            </div>
-          </div>
-          ${!isOwn ? `
-          <button class="vote-btn ${isVoted ? "voted" : ""}" data-id="${id}">
-            ${isVoted ? "✓ Stemt" : "Stem"}
-            <span class="vote-count">${data.votes}</span>
-          </button>` : `<span class="vote-count-own">${data.votes} stemmer</span>`}
-        `;
-        container.appendChild(card);
-        rank++;
-      });
-    }
-
-    renderForm();
-    if (isAdmin) renderAdminList();
-  });
-
   // ── Helpers ───────────────────────────────────────────────────
   function escapeHtml(str) {
     if (!str) return "";
@@ -437,603 +599,174 @@
   }
 
   function shake(el) {
-    el.style.animation = "none";
-    el.offsetHeight;
+    el.style.animation = "none"; el.offsetHeight;
     el.style.animation = "shake 0.4s ease";
   }
 </script>
 
 <style>
   :root {
-    --bg: #f7f6f3;
-    --surface: #fff;
-    --card: #fff;
-    --accent: #3a6bff;
-    --accent-light: #eef1ff;
-    --text: #111;
-    --muted: #999;
-    --border: #e4e2dc;
-    --leading-bg: #eef1ff;
-    --leading-border: #3a6bff;
-    --own-bg: #f5fff5;
-    --own-border: #b0e0b0;
-    --ts-bg: #090e14;
-    --ts-panel: #0d1620;
-    --ts-border: #1a3a5c;
-    --ts-accent: #00cfff;
-    --ts-accent2: #ff6a00;
-    --ts-text: #c8e8ff;
-    --ts-muted: #4a7a9b;
-    --ts-danger: #ff3a3a;
+    --bg: #f7f6f3; --surface: #fff; --card: #fff;
+    --accent: #3a6bff; --accent-light: #eef1ff;
+    --text: #111; --muted: #999; --border: #e4e2dc;
+    --leading-bg: #eef1ff; --leading-border: #3a6bff;
+    --own-bg: #f5fff5; --own-border: #b0e0b0;
+    --ts-bg: #090e14; --ts-panel: #0d1620; --ts-border: #1a3a5c;
+    --ts-accent: #00cfff; --ts-accent2: #ff6a00; --ts-text: #c8e8ff;
+    --ts-muted: #4a7a9b; --ts-danger: #ff3a3a; --ts-ok: #00ff88;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 0 1rem 5rem; }
 
-  body {
-    font-family: 'DM Sans', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-    padding: 0 1rem 5rem;
-  }
-
-  /* ── Login ── */
-  #login-section {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-    gap: 1.5rem;
-    text-align: center;
-    padding: 2rem;
-  }
-
-  #login-section h1 {
-    font-family: 'Fraunces', serif;
-    font-size: clamp(2rem, 6vw, 3.2rem);
-    font-weight: 900;
-  }
-
+  /* Login */
+  #login-section { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 1.5rem; text-align: center; padding: 2rem; }
+  #login-section h1 { font-family: 'Fraunces', serif; font-size: clamp(2rem, 6vw, 3.2rem); font-weight: 900; }
   #login-section p { color: var(--muted); font-size: 0.95rem; }
-
-  .google-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 0.8rem 1.5rem;
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.95rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.18s;
-    color: var(--text);
-  }
-
+  .google-btn { display: flex; align-items: center; gap: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.8rem 1.5rem; font-family: 'DM Sans', sans-serif; font-size: 0.95rem; font-weight: 500; cursor: pointer; transition: all 0.18s; color: var(--text); }
   .google-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .google-icon { width: 20px; height: 20px; flex-shrink: 0; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23EA4335' d='M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z'/%3E%3Cpath fill='%234285F4' d='M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z'/%3E%3Cpath fill='%23FBBC05' d='M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z'/%3E%3Cpath fill='%2334A853' d='M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z'/%3E%3C/svg%3E") center/contain no-repeat; }
 
-  .google-icon {
-    width: 20px; height: 20px; flex-shrink: 0;
-    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23EA4335' d='M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z'/%3E%3Cpath fill='%234285F4' d='M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z'/%3E%3Cpath fill='%23FBBC05' d='M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z'/%3E%3Cpath fill='%2334A853' d='M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z'/%3E%3C/svg%3E") center/contain no-repeat;
-  }
-
-  /* ── Main ── */
+  /* Main */
   #main-section { display: none; }
   .container { max-width: 620px; margin: 0 auto; }
-
   header { text-align: center; padding: 3rem 0 2.5rem; }
-
-  .eyebrow {
-    font-size: 0.72rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 0.75rem;
-  }
-
-  h1 {
-    font-family: 'Fraunces', serif;
-    font-size: clamp(2.2rem, 7vw, 3.6rem);
-    font-weight: 900;
-    line-height: 1.05;
-    color: var(--text);
-    margin-bottom: 0.6rem;
-  }
-
+  .eyebrow { font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.75rem; }
+  h1 { font-family: 'Fraunces', serif; font-size: clamp(2.2rem, 7vw, 3.6rem); font-weight: 900; line-height: 1.05; color: var(--text); margin-bottom: 0.6rem; }
   .subtitle { color: var(--muted); font-size: 0.9rem; font-weight: 300; }
 
-  .topbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1.5rem;
-    font-size: 0.82rem;
-    color: var(--muted);
-  }
-
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; font-size: 0.82rem; color: var(--muted); }
   .topbar-right { display: flex; gap: 0.6rem; align-items: center; }
-
-  .text-btn {
-    background: none; border: none;
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.82rem;
-    cursor: pointer; color: var(--muted);
-    transition: color 0.15s;
-  }
-
+  .text-btn { background: none; border: none; font-family: 'DM Sans', sans-serif; font-size: 0.82rem; cursor: pointer; color: var(--muted); transition: color 0.15s; }
   .text-btn:hover { color: var(--text); }
   .text-btn.danger:hover { color: #e04040; }
+  .admin-trigger { background: var(--ts-bg); border: 1px solid var(--ts-accent); border-radius: 3px; font-family: 'Share Tech Mono', monospace; font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; color: var(--ts-accent); padding: 0.28rem 0.65rem; transition: all 0.15s; box-shadow: 0 0 6px rgba(0,207,255,0.2); }
+  .admin-trigger:hover { background: rgba(0,207,255,0.08); box-shadow: 0 0 12px rgba(0,207,255,0.4); }
 
-  /* Tony Stark admin button */
-  .admin-trigger {
-    background: var(--ts-bg);
-    border: 1px solid var(--ts-accent);
-    border-radius: 3px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.65rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    cursor: pointer;
-    color: var(--ts-accent);
-    padding: 0.28rem 0.65rem;
-    transition: all 0.15s;
-    box-shadow: 0 0 6px rgba(0,207,255,0.2);
-  }
+  /* Lock banner */
+  #lock-banner { display: none; background: #fff5f0; border: 1px solid #ffb090; border-radius: 10px; padding: 0.7rem 1rem; margin-bottom: 1.25rem; font-size: 0.84rem; color: #c05020; text-align: center; }
 
-  .admin-trigger:hover {
-    background: rgba(0,207,255,0.08);
-    box-shadow: 0 0 12px rgba(0,207,255,0.4);
-  }
+  /* Countdown */
+  #countdown-bar { display: none; background: var(--ts-bg); border: 1px solid var(--ts-border); border-radius: 8px; padding: 0.6rem 1rem; margin-bottom: 1.25rem; text-align: center; }
+  #countdown-label { font-family: 'Share Tech Mono', monospace; font-size: 0.82rem; color: var(--ts-accent); letter-spacing: 0.12em; }
 
-  .vote-counter {
-    font-size: 0.75rem;
-    color: var(--muted);
-    margin-bottom: 1rem;
-    font-family: 'DM Sans', sans-serif;
-  }
-
-  /* ── Form ── */
-  .form-box {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 1.75rem;
-    margin-bottom: 2rem;
-  }
-
-  .form-label {
-    display: block;
-    font-size: 0.72rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 0.45rem;
-  }
-
-  textarea {
-    width: 100%;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    color: var(--text);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.95rem;
-    padding: 0.75rem 1rem;
-    transition: border-color 0.2s;
-    outline: none;
-    resize: vertical;
-    min-height: 80px;
-  }
-
-  textarea:focus { border-color: var(--accent); }
-
-  #submit-btn {
-    margin-top: 1rem;
-    width: 100%;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.95rem;
-    font-weight: 500;
-    padding: 0.85rem;
-    cursor: pointer;
-    transition: opacity 0.2s, transform 0.1s;
-  }
-
+  /* Form */
+  .form-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1.75rem; margin-bottom: 2rem; }
+  .form-label { display: block; font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.45rem; }
+  textarea, input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 0.95rem; padding: 0.75rem 1rem; transition: border-color 0.2s; outline: none; }
+  textarea { resize: vertical; min-height: 80px; }
+  textarea:focus, input[type="text"]:focus { border-color: var(--accent); }
+  #submit-btn { margin-top: 1rem; width: 100%; background: var(--accent); color: #fff; border: none; border-radius: 10px; font-family: 'DM Sans', sans-serif; font-size: 0.95rem; font-weight: 500; padding: 0.85rem; cursor: pointer; transition: opacity 0.2s, transform 0.1s; }
   #submit-btn:hover { opacity: 0.88; }
   #submit-btn:active { transform: scale(0.98); }
   #submit-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  /* ── Cards ── */
-  .section-title {
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 0.85rem;
-  }
-
+  /* Cards */
+  .section-title { font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.85rem; }
+  .vote-counter { font-size: 0.75rem; color: var(--muted); margin-bottom: 1rem; }
   #cards-container { display: flex; flex-direction: column; gap: 0.65rem; }
-
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 1.1rem;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    animation: slideIn 0.25s ease;
-    transition: background 0.3s, border-color 0.3s;
-  }
-
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem; display: flex; align-items: center; gap: 1rem; animation: slideIn 0.25s ease; }
   .card.leading { background: var(--leading-bg); border-color: var(--leading-border); }
   .card.own { background: var(--own-bg); border-color: var(--own-border); }
-
   .card-rank { font-size: 1rem; font-weight: 600; color: #ccc; min-width: 2rem; text-align: center; flex-shrink: 0; }
   .card.leading .card-rank { color: var(--accent); }
   .card-content { flex: 1; min-width: 0; }
   .card-desc { font-size: 0.96rem; line-height: 1.5; word-break: break-word; }
   .card-meta { margin-top: 0.25rem; font-size: 0.74rem; color: var(--muted); }
   .card-meta span { color: var(--accent); font-weight: 500; }
-
-  .own-tag {
-    display: inline-block;
-    font-size: 0.7rem;
-    background: #d4f0d4;
-    color: #2a7a2a;
-    border-radius: 4px;
-    padding: 0.1rem 0.4rem;
-    font-weight: 500;
-  }
-
-  .vote-btn {
-    flex-shrink: 0;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 50px;
-    color: var(--text);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 0.82rem;
-    padding: 0.45rem 0.8rem;
-    cursor: pointer;
-    transition: all 0.18s;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    white-space: nowrap;
-  }
-
+  .own-tag { display: inline-block; font-size: 0.7rem; background: #d4f0d4; color: #2a7a2a; border-radius: 4px; padding: 0.1rem 0.4rem; font-weight: 500; }
+  .vote-btn { flex-shrink: 0; background: transparent; border: 1px solid var(--border); border-radius: 50px; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 0.82rem; padding: 0.45rem 0.8rem; cursor: pointer; transition: all 0.18s; display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
   .vote-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
   .vote-btn.voted { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
-
-  .vote-count {
-    background: var(--border);
-    border-radius: 20px;
-    padding: 0.1rem 0.45rem;
-    font-weight: 500;
-    font-size: 0.78rem;
-  }
-
+  .vote-count { background: var(--border); border-radius: 20px; padding: 0.1rem 0.45rem; font-weight: 500; font-size: 0.78rem; }
   .voted .vote-count { background: #d0d9ff; color: var(--accent); }
-
   .vote-count-own { flex-shrink: 0; font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
-
   #empty-state { text-align: center; padding: 3rem 1rem; color: var(--muted); display: none; font-size: 0.88rem; }
 
-  .credit {
-    text-align: center;
-    margin-top: 3rem;
-    font-size: 0.68rem;
-    color: #ccc;
-    letter-spacing: 0.08em;
-    font-family: 'DM Sans', sans-serif;
-  }
+  /* Chat */
+  .chat-section { margin-top: 2.5rem; }
+  .chat-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  #chat-messages { height: 220px; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .chat-msg { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.88rem; position: relative; transition: opacity 0.3s; }
+  .chat-name { font-weight: 500; color: var(--accent); flex-shrink: 0; font-size: 0.8rem; }
+  .chat-text { color: var(--text); word-break: break-word; flex: 1; }
+  .chat-delete-btn { flex-shrink: 0; background: none; border: none; color: #ccc; cursor: pointer; font-size: 0.75rem; padding: 0.1rem 0.3rem; transition: color 0.15s; }
+  .chat-delete-btn:hover { color: #e04040; }
+  .chat-input-row { display: flex; border-top: 1px solid var(--border); }
+  #chat-input { flex: 1; background: transparent; border: none; padding: 0.75rem 1rem; font-family: 'DM Sans', sans-serif; font-size: 0.9rem; color: var(--text); outline: none; }
+  #chat-send-btn { background: var(--accent); color: #fff; border: none; padding: 0.75rem 1.2rem; font-family: 'DM Sans', sans-serif; font-size: 0.88rem; font-weight: 500; cursor: pointer; transition: opacity 0.2s; min-width: 60px; }
+  #chat-send-btn:hover { opacity: 0.88; }
+  #chat-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  /* ── Fullscreen scan overlay ── */
-  #scan-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: #000;
-    z-index: 2000;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    overflow: hidden;
-  }
+  /* Credit */
+  .credit { text-align: center; margin-top: 3rem; font-size: 0.68rem; color: #ccc; letter-spacing: 0.08em; }
 
-  #scan-line {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, var(--ts-accent), transparent);
-    box-shadow: 0 0 12px var(--ts-accent), 0 0 30px var(--ts-accent);
-    animation: scanDown 0.6s linear infinite;
+  /* Explosion particles */
+  .particle { position: fixed; pointer-events: none; z-index: 9999; transform: translate(-50%, -50%); animation: explodeParticle 0.8s ease-out forwards; }
+  @keyframes explodeParticle {
+    0% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    100% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(0); opacity: 0; }
   }
+  .explosion-flash { position: fixed; width: 60px; height: 60px; border-radius: 50%; background: radial-gradient(circle, #fff 0%, #ffcc00 40%, transparent 70%); pointer-events: none; z-index: 9998; transform: translate(-50%, -50%); animation: flashOut 0.4s ease-out forwards; }
+  @keyframes flashOut { 0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; } 100% { transform: translate(-50%, -50%) scale(2); opacity: 0; } }
 
-  @keyframes scanDown {
-    from { top: 0; }
-    to { top: 100%; }
-  }
-
-  #scan-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1.5rem;
-    z-index: 1;
-  }
-
-  #scan-logo {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: clamp(2rem, 8vw, 3.5rem);
-    color: var(--ts-accent);
-    letter-spacing: 0.3em;
-    text-shadow: 0 0 20px var(--ts-accent), 0 0 40px var(--ts-accent);
-    animation: pulse 1s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-  }
-
-  #scan-text {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.82rem;
-    color: var(--ts-accent);
-    letter-spacing: 0.18em;
-    min-height: 1.4rem;
-    text-shadow: 0 0 8px var(--ts-accent);
-  }
-
-  #scan-bars {
-    display: flex;
-    gap: 6px;
-    align-items: flex-end;
-    height: 30px;
-  }
-
-  .scan-bar {
-    width: 6px;
-    background: var(--ts-accent);
-    border-radius: 2px;
-    animation: barPulse 0.5s ease-in-out infinite;
-    box-shadow: 0 0 6px var(--ts-accent);
-  }
-
+  /* Scan overlay */
+  #scan-overlay { display: none; position: fixed; inset: 0; background: #000; z-index: 2000; align-items: center; justify-content: center; flex-direction: column; overflow: hidden; }
+  #scan-line { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--ts-accent), transparent); box-shadow: 0 0 12px var(--ts-accent), 0 0 30px var(--ts-accent); animation: scanDown 0.6s linear infinite; }
+  @keyframes scanDown { from { top: 0; } to { top: 100%; } }
+  #scan-content { display: flex; flex-direction: column; align-items: center; gap: 1.5rem; z-index: 1; }
+  #scan-logo { font-family: 'Share Tech Mono', monospace; font-size: clamp(2rem, 8vw, 3.5rem); color: var(--ts-accent); letter-spacing: 0.3em; text-shadow: 0 0 20px var(--ts-accent), 0 0 40px var(--ts-accent); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+  #scan-text { font-family: 'Share Tech Mono', monospace; font-size: 0.82rem; color: var(--ts-accent); letter-spacing: 0.18em; min-height: 1.4rem; text-shadow: 0 0 8px var(--ts-accent); }
+  #scan-bars { display: flex; gap: 6px; align-items: flex-end; height: 30px; }
+  .scan-bar { width: 6px; background: var(--ts-accent); border-radius: 2px; animation: barPulse 0.5s ease-in-out infinite; box-shadow: 0 0 6px var(--ts-accent); }
   .scan-bar:nth-child(1) { animation-delay: 0s; height: 60%; }
   .scan-bar:nth-child(2) { animation-delay: 0.1s; height: 100%; }
   .scan-bar:nth-child(3) { animation-delay: 0.2s; height: 40%; }
   .scan-bar:nth-child(4) { animation-delay: 0.3s; height: 80%; }
   .scan-bar:nth-child(5) { animation-delay: 0.4s; height: 55%; }
+  @keyframes barPulse { 0%, 100% { transform: scaleY(1); opacity: 1; } 50% { transform: scaleY(0.4); opacity: 0.4; } }
 
-  @keyframes barPulse {
-    0%, 100% { transform: scaleY(1); opacity: 1; }
-    50% { transform: scaleY(0.4); opacity: 0.4; }
-  }
-
-  /* ── Admin overlay ── */
-  #admin-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.88);
-    z-index: 1000;
-    align-items: center;
-    justify-content: center;
-    padding: 1rem;
-  }
-
-  .admin-modal {
-    background: var(--ts-bg);
-    border: 1px solid var(--ts-border);
-    border-radius: 4px;
-    width: 100%;
-    max-width: 540px;
-    max-height: 85vh;
-    overflow-y: auto;
-    box-shadow: 0 0 40px rgba(0,207,255,0.15), 0 0 80px rgba(0,0,0,0.8);
-  }
-
-  .admin-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1.25rem 1.5rem;
-    border-bottom: 1px solid var(--ts-border);
-    position: sticky;
-    top: 0;
-    background: var(--ts-bg);
-    z-index: 1;
-  }
-
-  .admin-title {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.75rem;
-    letter-spacing: 0.2em;
-    color: var(--ts-accent);
-    text-transform: uppercase;
-  }
-
+  /* Admin overlay */
+  #admin-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.88); z-index: 1000; align-items: center; justify-content: center; padding: 1rem; }
+  .admin-modal { background: var(--ts-bg); border: 1px solid var(--ts-border); border-radius: 4px; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; box-shadow: 0 0 40px rgba(0,207,255,0.15), 0 0 80px rgba(0,0,0,0.8); }
+  .admin-header { display: flex; align-items: center; justify-content: space-between; padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--ts-border); position: sticky; top: 0; background: var(--ts-bg); z-index: 1; }
+  .admin-title { font-family: 'Share Tech Mono', monospace; font-size: 0.75rem; letter-spacing: 0.2em; color: var(--ts-accent); text-transform: uppercase; }
   .admin-title span { color: var(--ts-accent2); }
-
-  .admin-close {
-    background: none;
-    border: 1px solid var(--ts-border);
-    color: var(--ts-muted);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.68rem;
-    padding: 0.3rem 0.65rem;
-    cursor: pointer;
-    border-radius: 2px;
-    transition: all 0.15s;
-    letter-spacing: 0.1em;
-  }
-
+  .admin-close { background: none; border: 1px solid var(--ts-border); color: var(--ts-muted); font-family: 'Share Tech Mono', monospace; font-size: 0.68rem; padding: 0.3rem 0.65rem; cursor: pointer; border-radius: 2px; transition: all 0.15s; letter-spacing: 0.1em; }
   .admin-close:hover { border-color: var(--ts-danger); color: var(--ts-danger); }
-
   #admin-login-box { padding: 2rem 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
-
-  #admin-scanning {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.82rem;
-    color: var(--ts-accent);
-    letter-spacing: 0.15em;
-    min-height: 1.5rem;
-    display: none;
-  }
-
-  .ts-label {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.68rem;
-    letter-spacing: 0.15em;
-    color: var(--ts-muted);
-    text-transform: uppercase;
-    margin-bottom: 0.4rem;
-    display: block;
-  }
-
-  #admin-pass-input {
-    width: 100%;
-    background: var(--ts-panel);
-    border: 1px solid var(--ts-border);
-    border-radius: 2px;
-    color: var(--ts-accent);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.95rem;
-    padding: 0.75rem 1rem;
-    outline: none;
-    transition: border-color 0.2s;
-    letter-spacing: 0.1em;
-  }
-
+  #admin-scanning { font-family: 'Share Tech Mono', monospace; font-size: 0.82rem; color: var(--ts-accent); letter-spacing: 0.15em; min-height: 1.5rem; display: none; }
+  .ts-label { font-family: 'Share Tech Mono', monospace; font-size: 0.68rem; letter-spacing: 0.15em; color: var(--ts-muted); text-transform: uppercase; margin-bottom: 0.4rem; display: block; }
+  #admin-pass-input { width: 100%; background: var(--ts-panel); border: 1px solid var(--ts-border); border-radius: 2px; color: var(--ts-accent); font-family: 'Share Tech Mono', monospace; font-size: 0.95rem; padding: 0.75rem 1rem; outline: none; transition: border-color 0.2s; letter-spacing: 0.1em; }
   #admin-pass-input:focus { border-color: var(--ts-accent); }
-
-  .ts-btn {
-    background: transparent;
-    border: 1px solid var(--ts-accent);
-    color: var(--ts-accent);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.75rem;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    padding: 0.75rem 1rem;
-    cursor: pointer;
-    border-radius: 2px;
-    transition: all 0.15s;
-  }
-
+  .ts-btn { background: transparent; border: 1px solid var(--ts-accent); color: var(--ts-accent); font-family: 'Share Tech Mono', monospace; font-size: 0.75rem; letter-spacing: 0.15em; text-transform: uppercase; padding: 0.75rem 1rem; cursor: pointer; border-radius: 2px; transition: all 0.15s; }
   .ts-btn:hover { background: rgba(0,207,255,0.08); box-shadow: 0 0 12px rgba(0,207,255,0.2); }
-
-  #admin-error {
-    display: none;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.72rem;
-    color: var(--ts-danger);
-    letter-spacing: 0.1em;
-  }
-
+  .ts-toggle-btn { background: transparent; border: 1px solid var(--ts-border); color: var(--ts-muted); font-family: 'Share Tech Mono', monospace; font-size: 0.68rem; letter-spacing: 0.12em; text-transform: uppercase; padding: 0.3rem 0.7rem; cursor: pointer; border-radius: 2px; transition: all 0.15s; }
+  .ts-toggle-btn.active-ok { border-color: var(--ts-ok); color: var(--ts-ok); }
+  .ts-toggle-btn.active-danger { border-color: var(--ts-danger); color: var(--ts-danger); }
+  .ts-toggle-btn:hover { opacity: 0.8; }
+  #admin-error { display: none; font-family: 'Share Tech Mono', monospace; font-size: 0.72rem; color: var(--ts-danger); letter-spacing: 0.1em; }
   #admin-error.blink { animation: blinkRed 0.15s ease 3; }
-
-  @keyframes blinkRed {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
-  }
-
+  @keyframes blinkRed { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
   #admin-panel-content { padding: 1.25rem 1.5rem; display: none; }
-
-  .admin-stats {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.68rem;
-    color: var(--ts-muted);
-    letter-spacing: 0.1em;
-    margin-bottom: 1.25rem;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid var(--ts-border);
-  }
-
+  .admin-stats { font-family: 'Share Tech Mono', monospace; font-size: 0.68rem; color: var(--ts-muted); letter-spacing: 0.1em; margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--ts-border); }
   .admin-stats span { color: var(--ts-accent); }
-
+  #admin-controls { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--ts-border); }
+  .admin-control-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
   #admin-list { display: flex; flex-direction: column; gap: 0.5rem; }
-
-  .admin-row {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    background: var(--ts-panel);
-    border: 1px solid var(--ts-border);
-    border-radius: 2px;
-    padding: 0.85rem 1rem;
-    transition: border-color 0.15s, opacity 0.4s;
-  }
-
+  .admin-row { display: flex; align-items: center; gap: 1rem; background: var(--ts-panel); border: 1px solid var(--ts-border); border-radius: 2px; padding: 0.85rem 1rem; transition: border-color 0.15s, opacity 0.3s; position: relative; }
   .admin-row:hover { border-color: rgba(0,207,255,0.3); }
-
-  .admin-row.terminated {
-    border-color: var(--ts-danger) !important;
-    opacity: 0;
-  }
-
-  .admin-row.terminated::after {
-    content: "// TERMINATED";
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.72rem;
-    color: var(--ts-danger);
-    letter-spacing: 0.15em;
-    position: absolute;
-    pointer-events: none;
-  }
-
-  .admin-row-info { flex: 1; min-width: 0; position: relative; }
+  .admin-row-info { flex: 1; min-width: 0; }
   .admin-row-desc { font-size: 0.88rem; color: var(--ts-text); line-height: 1.4; word-break: break-word; }
   .admin-row-meta { font-family: 'Share Tech Mono', monospace; font-size: 0.64rem; color: var(--ts-muted); margin-top: 0.25rem; letter-spacing: 0.08em; }
-
-  .admin-delete-btn {
-    flex-shrink: 0;
-    background: transparent;
-    border: 1px solid var(--ts-danger);
-    color: var(--ts-danger);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.64rem;
-    letter-spacing: 0.12em;
-    padding: 0.3rem 0.6rem;
-    cursor: pointer;
-    border-radius: 2px;
-    transition: all 0.15s;
-    opacity: 0.6;
-  }
-
+  .admin-delete-btn { flex-shrink: 0; background: transparent; border: 1px solid var(--ts-danger); color: var(--ts-danger); font-family: 'Share Tech Mono', monospace; font-size: 0.64rem; letter-spacing: 0.12em; padding: 0.3rem 0.6rem; cursor: pointer; border-radius: 2px; transition: all 0.15s; opacity: 0.6; }
   .admin-delete-btn:hover { opacity: 1; background: rgba(255,58,58,0.1); }
+  .admin-empty { font-family: 'Share Tech Mono', monospace; font-size: 0.72rem; color: var(--ts-muted); text-align: center; padding: 2rem; letter-spacing: 0.1em; }
 
-  .admin-empty {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 0.72rem;
-    color: var(--ts-muted);
-    text-align: center;
-    padding: 2rem;
-    letter-spacing: 0.1em;
-  }
-
-  /* ── Animations ── */
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  @keyframes shake {
-    0%, 100% { transform: translateX(0); }
-    20% { transform: translateX(-6px); }
-    40% { transform: translateX(6px); }
-    60% { transform: translateX(-4px); }
-    80% { transform: translateX(4px); }
-  }
+  /* Animations */
+  @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
 </style>
 </head>
 <body>
@@ -1066,6 +799,9 @@
       </div>
     </div>
 
+    <div id="lock-banner">Avstemningen er låst — ingen nye forslag eller stemmer.</div>
+    <div id="countdown-bar"><span id="countdown-label"></span></div>
+
     <div class="form-box">
       <label class="form-label" id="form-main-label">Antrekkforslag</label>
       <textarea id="outfit-desc" placeholder="f.eks. Blå jeans med hvit t-skjorte"></textarea>
@@ -1074,9 +810,20 @@
 
     <div class="section-title">Alle forslag — rangert etter stemmer</div>
     <div class="vote-counter" id="vote-counter"></div>
-
     <div id="empty-state"><p>Ingen forslag ennå.</p></div>
     <div id="cards-container"></div>
+
+    <div class="chat-section">
+      <div class="section-title" style="margin-top:2rem">Chat</div>
+      <div class="chat-box">
+        <div id="chat-messages"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Skriv en melding..." maxlength="200">
+          <button id="chat-send-btn">Send</button>
+        </div>
+      </div>
+    </div>
+
     <div class="credit">vibe-kodet av Alfred</div>
   </div>
 </div>
@@ -1088,11 +835,8 @@
     <div id="scan-logo">⬡ JARVIS</div>
     <div id="scan-text">// INITIALISERER...</div>
     <div id="scan-bars">
-      <div class="scan-bar"></div>
-      <div class="scan-bar"></div>
-      <div class="scan-bar"></div>
-      <div class="scan-bar"></div>
-      <div class="scan-bar"></div>
+      <div class="scan-bar"></div><div class="scan-bar"></div><div class="scan-bar"></div>
+      <div class="scan-bar"></div><div class="scan-bar"></div>
     </div>
   </div>
 </div>
@@ -1104,10 +848,9 @@
       <div class="admin-title">JARVIS <span>//</span> ADMIN PANEL</div>
       <button class="admin-close" onclick="closeAdmin()">[ LUKK ]</button>
     </div>
-
     <div id="admin-login-box">
       <div id="admin-scanning">// SKANNER...</div>
-      <div id="admin-pass-box" style="display:none; display:flex; flex-direction:column; gap:1rem;">
+      <div id="admin-pass-box" style="display:none;flex-direction:column;gap:1rem;">
         <div>
           <span class="ts-label">Tilgangskode</span>
           <input type="password" id="admin-pass-input" placeholder="••••••••••">
@@ -1116,9 +859,9 @@
         <button class="ts-btn" onclick="adminLogin()">[ BEKREFT TILGANG ]</button>
       </div>
     </div>
-
     <div id="admin-panel-content">
       <div class="admin-stats" id="admin-stats">STATUS: <span>ONLINE</span></div>
+      <div id="admin-controls"></div>
       <div id="admin-list"></div>
     </div>
   </div>
